@@ -1,0 +1,113 @@
+@import '@fontsource/share-tech-mono/400.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+:root {
+  --primary:       #1D4ED8;
+  --primary-light: #DBEAFE;
+  --surface:       #FFFFFF;
+  --bg:            #F8FAFC;
+  --border:        #E2E8F0;
+  --text:          #0F172A;
+  --text-2:        #475569;
+}
+
+body {
+  font-family: 'Plus Jakarta Sans', 'Exo 2', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* uPlot overrides */
+.uplot, .u-wrap {
+  background: transparent !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+.uplot canvas { background: transparent !important; }
+
+/* Vital number font */
+.font-vital {
+  font-family: 'Share Tech Mono', monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* Scrollbar — light theme */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+
+/* Light waveform glow */
+.waveform-hr   canvas { filter: drop-shadow(0 0 3px rgba(22,163,74,0.55)); }
+.waveform-spo2 canvas { filter: drop-shadow(0 0 3px rgba(2,132,199,0.55)); }
+.waveform-etco2 canvas { filter: drop-shadow(0 0 3px rgba(217,119,6,0.5)); }
+
+/* Focus ring */
+*:focus-visible {
+  outline: 2px solid #3B82F6;
+  outline-offset: 2px;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Landing hero animated gradient */
+@keyframes gradient-flow {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+.hero-gradient {
+  background: linear-gradient(-45deg, #EFF6FF, #F0FDF4, #F0F9FF, #EEF2FF);
+  background-size: 400% 400%;
+  animation: gradient-flow 14s ease infinite;
+}
+
+/* Recording blink */
+@keyframes rec-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0.15; }
+}
+.animate-rec { animation: rec-blink 1.6s ease-in-out infinite; }
+
+/* Pulse for critical alerts */
+@keyframes pulse-critical {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
+.animate-pulse-critical { animation: pulse-critical 1s ease-in-out infinite; }
+
+/* Glow border for critical cards */
+@keyframes glow-critical {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(220,38,38,0.3); }
+  50%       { box-shadow: 0 0 0 3px rgba(220,38,38,0.5), 0 0 16px rgba(220,38,38,0.15); }
+}
+.animate-glow-critical { animation: glow-critical 1.2s ease-in-out infinite; }
+
+/* Skeleton shimmer */
+@keyframes skeleton-wave {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.animate-skeleton { animation: skeleton-wave 1.6s ease-in-out infinite; }
