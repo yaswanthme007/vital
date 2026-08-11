@@ -1,0 +1,14 @@
+{
+  "cell_size": 28,
+  "channels": 1,
+  "scale": 0.00392156862745098,
+  "input_name": "cell",
+  "output_name": "logits",
+  "input_shape": [
+    1,
+    1,
+    28,
+    28
+  ],
+  "note": "input is uint8 grayscale (see app.pipeline.segment.normalize_cell), cast to float32 and divided by 255 -- no mean/std normalization."
+}
