@@ -1,0 +1,14 @@
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+pydantic==2.13.4
+sqlalchemy==2.0.51
+pytest==9.1.1
+httpx==0.28.1
+Pillow==12.3.0
+opencv-python-headless==5.0.0.93
+numpy==2.5.1
+pytesseract==0.3.13
+reportlab==5.0.0
+torch==2.13.0
+onnx==1.22.0
+onnxruntime==1.28.0

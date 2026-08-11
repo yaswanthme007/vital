@@ -1,0 +1,31 @@
+services:
+  backend:
+    build: .
+    image: vital-backend:latest
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: sqlite:////data/vital.db
+      REPORTS_DIR: /data/generated_reports
+    volumes:
+      # Named volume, not a bind mount: signed records (and their PDFs) live
+      # under /data and survive `docker compose down` / container restarts.
+      # `docker compose down -v` is the explicit opt-in to wipe them.
+      - vital_data:/data
+    healthcheck:
+      # No curl/wget in python:3.12-slim by design (smaller image) — urllib
+      # from the stdlib avoids adding a package just for the healthcheck.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    # No other services, no external hosts configured anywhere above: once
+    # built, this container makes zero outbound network calls at runtime —
+    # SQLite is a local file under /data, Tesseract is the local binary
+    # installed into the image, and the vitals feed (ReplaySource) is
+    # synthetic/local-dataset only. The published port is inbound-only.
+
+volumes:
+  vital_data:

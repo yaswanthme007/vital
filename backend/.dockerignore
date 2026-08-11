@@ -1,0 +1,21 @@
+# Dev-only / not needed by the running service
+.venv/
+frontend-reference/
+tests/
+generated_reports/
+simulator/out/
+
+# VCS + tooling cruft
+.git/
+.gitignore
+.pytest_cache/
+.claude/
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Local dev artifacts that must never be baked into the image
+vital.db
+.env
+smoke_ws.py
+README.md

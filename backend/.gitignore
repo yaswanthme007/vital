@@ -1,0 +1,11 @@
+frontend-reference/
+.venv/
+__pycache__/
+*.pyc
+vital.db
+.env
+simulator/out/
+smoke_ws.py
+generated_reports/
+demo_report.pdf
+simulator/train/dataset/
