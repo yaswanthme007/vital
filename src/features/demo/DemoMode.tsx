@@ -5,6 +5,7 @@ import { Zap, X, ChevronDown, ChevronUp, Play, Square } from 'lucide-react';
 import { useDemoStore, DEMO_SCENARIOS, type ScenarioId } from '@/store/demoStore';
 import { useVitalsStore } from '@/store/vitalsStore';
 import { useSessionStore } from '@/store/sessionStore';
+import { useToast } from '@/store/toastStore';
 import { cn } from '@/lib/utils';
 import { randomWalk } from '@/lib/utils';
 
@@ -26,19 +27,29 @@ export function DemoMode() {
   const { active, scenarioId, activate, deactivate } = useDemoStore();
   const { updateVitals } = useVitalsStore();
   const { activeSession, startSession, endSession } = useSessionStore();
+  const { toast } = useToast();
   const navigate = useNavigate();
   const ivRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const prevRef = useRef<Parameters<typeof updateVitals>[0] | null>(null);
 
   const activeScenario = DEMO_SCENARIOS.find((s) => s.id === scenarioId) ?? null;
 
-  // When a scenario is activated: start session if needed, navigate, begin injection
-  const handleActivate = (id: ScenarioId) => {
-    activate(id);
-    if (!activeSession) {
-      startSession(DEMO_PATIENT);
+  // When a scenario is activated: start session if needed, navigate, begin injection.
+  // `activate(id)` only fires on success — otherwise the nav bar would show
+  // "DEMO — <scenario>" as running even though no session ever started.
+  const handleActivate = async (id: ScenarioId) => {
+    try {
+      if (!activeSession) {
+        await startSession(DEMO_PATIENT);
+      }
+      activate(id);
+      navigate('/surgery');
+    } catch (err) {
+      console.error('Failed to start demo session', err);
+      toast.error('Could not start demo', {
+        description: "Couldn't reach the backend — check it's running (docker compose up) and try again.",
+      });
     }
-    navigate('/surgery');
   };
 
   const handleDeactivate = () => {
@@ -92,25 +103,44 @@ export function DemoMode() {
   useEffect(() => () => clearInterval(ivRef.current), []);
 
   return (
-    <motion.div
-      className="fixed bottom-4 right-4 z-40 flex flex-col items-end gap-2"
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: 0.5, duration: 0.3 }}
-    >
+    <div className="relative flex-shrink-0">
+      {/* Toggle button */}
+      <motion.button
+        onClick={() => setExpanded(v => !v)}
+        className={cn(
+          'flex items-center gap-2 px-3 py-1.5 rounded-xl border font-display text-vital-xs font-semibold transition-all duration-200',
+          active
+            ? 'bg-amber-400 border-amber-400 text-white shadow-[0_4px_16px_rgba(245,158,11,0.3)]'
+            : 'bg-white border-slate-200 text-slate-500 hover:text-slate-700 hover:border-slate-300'
+        )}
+        whileHover={{ scale: 1.04 }}
+        whileTap={{ scale: 0.96 }}
+        transition={{ duration: 0.1 }}
+        aria-expanded={expanded}
+        aria-label="Demo mode controls"
+      >
+        <Zap size={14} className={active ? 'text-white' : 'text-amber-400'} />
+        {active ? (
+          <span>DEMO — {activeScenario?.label}</span>
+        ) : (
+          <span>Demo Mode</span>
+        )}
+        {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+      </motion.button>
+
       {/* Expanded panel */}
       <AnimatePresence>
         {expanded && (
           <motion.div
-            className="w-72 rounded-2xl overflow-hidden"
+            className="absolute top-full right-0 mt-2 w-72 rounded-2xl overflow-hidden z-50"
             style={{
               background: '#FFFFFF',
               border: '1px solid #E2E8F0',
-              boxShadow: '0 8px 32px rgba(0,0,0,0.1)',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.14)',
             }}
-            initial={{ opacity: 0, scale: 0.94, y: 10 }}
+            initial={{ opacity: 0, scale: 0.94, y: -8 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.94, y: 10 }}
+            exit={{ opacity: 0, scale: 0.94, y: -8 }}
             transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
           >
             {/* Panel header */}
@@ -208,28 +238,6 @@ export function DemoMode() {
           </motion.div>
         )}
       </AnimatePresence>
-
-      {/* Toggle button */}
-      <motion.button
-        onClick={() => setExpanded(v => !v)}
-        className={cn(
-          'flex items-center gap-2 px-4 py-2.5 rounded-xl border font-display text-vital-xs font-semibold transition-all duration-200',
-          active
-            ? 'bg-amber-400 border-amber-400 text-white shadow-[0_4px_16px_rgba(245,158,11,0.3)]'
-            : 'bg-white border-slate-200 text-slate-500 hover:text-slate-700 hover:border-slate-300 shadow-md'
-        )}
-        whileHover={{ scale: 1.04 }}
-        whileTap={{ scale: 0.96 }}
-        transition={{ duration: 0.1 }}
-      >
-        <Zap size={14} className={active ? 'text-white' : 'text-amber-400'} />
-        {active ? (
-          <span>DEMO — {activeScenario?.label}</span>
-        ) : (
-          <span>Demo Mode</span>
-        )}
-        {expanded ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
-      </motion.button>
-    </motion.div>
+    </div>
   );
 }

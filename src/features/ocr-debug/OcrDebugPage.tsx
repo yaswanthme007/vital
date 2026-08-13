@@ -570,11 +570,11 @@ export function OcrDebugPage() {
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden min-h-0">
         {/* ── Left: frame viewer ── */}
-        <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex-1 flex flex-col overflow-hidden min-h-0">
           {/* Canvas */}
-          <div className="flex-1 bg-monitor-bg">
+          <div className="flex-1 bg-monitor-bg min-h-0">
             <AnimatePresence mode="wait">
               <motion.div
                 key={activeIndex}

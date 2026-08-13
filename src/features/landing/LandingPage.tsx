@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { useSessionStore } from '@/store/sessionStore';
 import { useDemoStore } from '@/store/demoStore';
+import { useToast } from '@/store/toastStore';
 
 // ─── Animated Vital Card ─────────────────────────────────────────────────────
 
@@ -146,6 +147,7 @@ export function LandingPage() {
   const navigate = useNavigate();
   const { startSession, activeSession } = useSessionStore();
   const { activate: activateDemo } = useDemoStore();
+  const { toast } = useToast();
   const [demoLoading, setDemoLoading] = useState(false);
   const pipelineRef = useRef(null);
   const pipelineInView = useInView(pipelineRef, { once: true, margin: '-80px' });
@@ -154,17 +156,24 @@ export function LandingPage() {
 
   const handleDemo = async () => {
     setDemoLoading(true);
-    await new Promise(r => setTimeout(r, 500));
-    if (!activeSession) {
-      startSession({
-        patientId: 'DEMO-001',
-        procedure: 'Laparoscopic Cholecystectomy',
-        anesthetist: 'Dr. Sarah Chen',
-        asa: 2,
+    try {
+      if (!activeSession) {
+        await startSession({
+          patientId: 'DEMO-001',
+          procedure: 'Laparoscopic Cholecystectomy',
+          anesthetist: 'Dr. Sarah Chen',
+          asa: 2,
+        });
+      }
+      activateDemo('normal');
+      navigate('/surgery');
+    } catch (err) {
+      console.error('Failed to start demo session', err);
+      toast.error('Could not start demo', {
+        description: "Couldn't reach the backend — check it's running (docker compose up) and try again.",
       });
+      setDemoLoading(false);
     }
-    activateDemo('normal');
-    navigate('/surgery');
   };
 
   return (

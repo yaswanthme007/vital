@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Activity, ChevronRight, User, Stethoscope, FileText, ArrowLeft, Camera } from 'lucide-react';
 import { useSessionStore } from '@/store/sessionStore';
+import { useToast } from '@/store/toastStore';
 import { cn } from '@/lib/utils';
 import type { SessionFormData, AsaClass } from '@/types/session';
 
@@ -55,6 +56,7 @@ function FormField({
 
 export function StartPage() {
   const { startSession } = useSessionStore();
+  const { toast } = useToast();
   const navigate = useNavigate();
 
   const [form, setForm] = useState<Partial<SessionFormData>>({ patientId: '', procedure: '', anesthetist: '' });
@@ -81,9 +83,16 @@ export function StartPage() {
 
   const handleStart = async () => {
     setLoading(true);
-    await new Promise(r => setTimeout(r, 700));
-    startSession({ ...(form as SessionFormData), asa: asa ?? undefined });
-    navigate('/surgery');
+    try {
+      await startSession({ ...(form as SessionFormData), asa: asa ?? undefined });
+      navigate('/surgery');
+    } catch (err) {
+      console.error('Failed to start session', err);
+      toast.error('Could not start the case', {
+        description: "Couldn't reach the backend — check it's running (docker compose up) and try again.",
+      });
+      setLoading(false);
+    }
   };
 
   const inputCls = (err?: string) => cn(
@@ -94,7 +103,7 @@ export function StartPage() {
   );
 
   return (
-    <div className="min-h-screen bg-clinical-bg flex flex-col items-center justify-center p-6">
+    <div className="relative h-screen bg-clinical-bg flex flex-col items-center overflow-y-auto p-6 py-12">
       {/* Background gradient */}
       <div className="absolute inset-0 pointer-events-none overflow-hidden hero-gradient opacity-60" />
 

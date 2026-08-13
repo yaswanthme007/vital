@@ -26,7 +26,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# torch is pinned in requirements.txt for simulator/train/train_cnn.py (not
+# imported by the running server, which does inference via onnxruntime) —
+# pulling it from PyPI's default index resolves the CUDA build and its
+# ~1GB of nvidia_* dependencies. Installing the CPU wheel first satisfies
+# that pin (pip ignores a candidate's local version segment, e.g. "+cpu",
+# when the requirements.txt specifier itself has none) without the bloat.
+RUN pip install --no-cache-dir torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir -r requirements.txt
+
+# FastAPI's UploadFile/File() (app/api/pipeline.py) needs python-multipart to
+# parse the request — kept as its own layer rather than added to
+# requirements.txt so it doesn't invalidate the (slow, network-flaky) layer
+# above on every unrelated dependency tweak.
+RUN pip install --no-cache-dir python-multipart==0.0.20
 
 # Only what the running service needs: the app itself, the simulator package
 # (ReplaySource's "pipeline" mode and the seed script both import it), and

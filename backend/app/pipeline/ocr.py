@@ -86,9 +86,20 @@ def _locate_tesseract_binary(explicit_cmd: Optional[str]) -> Optional[str]:
 
 
 def _preprocess(crop: np.ndarray, target_height: int = 120, pad: int = 20) -> Optional[np.ndarray]:
-    """Grayscale -> upscale -> Otsu threshold (inverted so bright digits on a
-    dark monitor background become black-on-white, which Tesseract expects)
-    -> denoise -> quiet-zone padding."""
+    """Grayscale -> upscale -> Otsu threshold -> denoise -> quiet-zone
+    padding. Output is always black glyph strokes on a white background,
+    which Tesseract expects — but which side of the Otsu split IS the glyph
+    isn't knowable in advance: a dark monitor screen has bright digits on
+    black (the historical assumption here), while a light dashboard has
+    coloured digits on white, and grayscale-brightness order between "digit"
+    and "background" flips between those two cases. Forcing THRESH_BINARY_INV
+    unconditionally (the old behaviour) only produced correct output for the
+    dark-background case; a light-background source got the opposite
+    polarity, which Tesseract reads far less reliably. Otsu still cleanly
+    separates the two clusters either way, so the fix is to threshold
+    without forcing a direction, then invert based on which cluster is the
+    majority — glyph strokes are always a small minority of a crop's area
+    relative to its background, regardless of which one is visually darker."""
     if crop is None or crop.size == 0:
         return None
 
@@ -102,7 +113,13 @@ def _preprocess(crop: np.ndarray, target_height: int = 120, pad: int = 20) -> Op
 
     denoised = cv2.medianBlur(resized, 3) if min(resized.shape[:2]) >= 5 else resized
 
-    _, binary = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    _, binary = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+
+    white_count = int(np.count_nonzero(binary == 255))
+    black_count = binary.size - white_count
+    if black_count > white_count:
+        binary = cv2.bitwise_not(binary)
+
     # Otsu can end up inverted on a near-uniform crop (e.g. pure background,
     # no digit) — bias toward a mostly-white "quiet" image in that case.
     if np.mean(binary) < 127 and np.std(gray) < 5:

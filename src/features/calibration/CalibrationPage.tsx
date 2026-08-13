@@ -8,6 +8,7 @@ import { Button } from '@/design-system/components/Button';
 import { Badge } from '@/design-system/components/Badge';
 import { ProgressBar } from '@/design-system/components/Progress';
 import { cn } from '@/lib/utils';
+import { api, type PipelineReadFrameResult } from '@/lib/api';
 
 // ─── Types & config ─────────────────────────────────────────────────────────────
 
@@ -418,12 +419,76 @@ function InstructionItem({ n, text }: { n: number; text: string }) {
 export function CalibrationPage() {
   const [currentStep, setCurrentStep] = useState<StepId>('connect');
   const [cameraActive, setCameraActive] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [cameraInfo, setCameraInfo] = useState<{ label: string; width: number; height: number } | null>(null);
+  const [sourceMode, setSourceMode] = useState<'camera' | 'screen' | null>(null);
   const [roiVisible, setRoiVisible] = useState<boolean[]>([false, false, false, false]);
   const [verifyProgress, setVerifyProgress] = useState(0);
   const [verifyDone, setVerifyDone] = useState(false);
+  const [verifyResult, setVerifyResult] = useState<PipelineReadFrameResult | null>(null);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
   const [detectProgress, setDetectProgress] = useState(0);
   const [perspectiveProgress, setPerspectiveProgress] = useState(0);
   const verifyRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  const stopCamera = () => {
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    setCameraActive(false);
+    setCameraInfo(null);
+    setSourceMode(null);
+  };
+
+  const connectSource = async (mode: 'camera' | 'screen') => {
+    if (cameraActive) {
+      stopCamera();
+      return;
+    }
+    setCameraError(null);
+    try {
+      // Camera: photographs a real screen (phone/monitor), so it inherits
+      // lighting/lens/JPEG artefacts on top of whatever colour drift the
+      // source screen already has.
+      // Screen/tab share: captures another tab's actual rendered pixels
+      // directly — no camera, no lighting, no re-encoding — so pointing
+      // this at VITAL's own Live Monitor tab is the cleanest possible
+      // verification of the colour-ROI pipeline, and needs no second device.
+      const stream = mode === 'camera'
+        ? await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } } })
+        : await navigator.mediaDevices.getDisplayMedia({ video: { displaySurface: 'browser' } as MediaTrackConstraints });
+
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+      const track = stream.getVideoTracks()[0];
+      const settings = track?.getSettings();
+      setCameraInfo({
+        label: track?.label || (mode === 'camera' ? 'Camera' : 'Shared tab'),
+        width: settings?.width ?? 0,
+        height: settings?.height ?? 0,
+      });
+      setSourceMode(mode);
+      setCameraActive(true);
+
+      // Screen share can be stopped from the browser's own "Stop sharing"
+      // bar, not just our Disconnect button — that only ends the track, it
+      // doesn't fire our state, so without this the UI would keep claiming
+      // to be connected to a stream that's already dead.
+      track?.addEventListener('ended', stopCamera);
+    } catch (err) {
+      setCameraError(err instanceof Error ? err.message : 'Could not access camera');
+    }
+  };
+
+  // Release the camera when leaving the page, not just on explicit disconnect
+  useEffect(() => () => {
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+  }, []);
 
   const stepIndex = STEPS.findIndex((s) => s.id === currentStep);
   const isLastContent = stepIndex === STEPS.length - 2; // 'verify' step
@@ -472,21 +537,45 @@ export function CalibrationPage() {
     }
   }, [currentStep]);
 
-  const runVerify = () => {
+  const runVerify = async () => {
     setVerifyProgress(0);
     setVerifyDone(false);
+    setVerifyError(null);
+    setVerifyResult(null);
     setRoiVisible([true, true, true, true]);
+
+    // Real OCR round-trip has no progress events of its own — this timer just
+    // keeps the bar moving while we wait, capped short of 100% until the
+    // response actually lands.
     let p = 0;
     verifyRef.current = setInterval(() => {
-      p += Math.random() * 0.025 + 0.01;
-      if (p >= 1) {
-        setVerifyProgress(1);
-        setVerifyDone(true);
-        clearInterval(verifyRef.current);
-      } else {
-        setVerifyProgress(p);
-      }
+      p += Math.random() * 0.02 + 0.01;
+      setVerifyProgress(Math.min(p, 0.9));
     }, 80);
+
+    try {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      if (!video || !canvas || !streamRef.current) {
+        throw new Error('Camera not connected');
+      }
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Could not capture frame');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise<Blob>((resolve, reject) =>
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Could not capture frame'))), 'image/jpeg', 0.92)
+      );
+      const result = await api.readFrame(blob);
+      setVerifyResult(result);
+    } catch (err) {
+      setVerifyError(err instanceof Error ? err.message : 'Verification failed');
+    } finally {
+      clearInterval(verifyRef.current);
+      setVerifyProgress(1);
+      setVerifyDone(true);
+    }
   };
 
   const goNext = () => {
@@ -616,14 +705,30 @@ export function CalibrationPage() {
         <div className="flex-1 flex flex-col overflow-hidden">
           {/* Camera preview */}
           {currentStep !== 'complete' && (
-            <div className="flex-shrink-0 bg-monitor-bg border-b border-monitor-border" style={{ height: 260 }}>
-              <CameraPreview
-                step={currentStep}
-                cameraActive={cameraActive}
-                roiVisible={roiVisible}
-                verifyProgress={verifyProgress}
-                verifyDone={verifyDone}
+            <div className="relative flex-shrink-0 bg-monitor-bg border-b border-monitor-border overflow-hidden" style={{ height: 260 }}>
+              {/* Real camera feed — shown full-bleed once connected, for every step */}
+              <video
+                ref={videoRef}
+                muted
+                playsInline
+                className={cn('absolute inset-0 w-full h-full object-cover', cameraActive ? 'block' : 'hidden')}
               />
+              <canvas ref={canvasRef} className="hidden" />
+              {cameraActive && (
+                <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#FF3B30]/90">
+                  <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                  <span className="font-display text-[9px] font-bold text-white tracking-wider">LIVE</span>
+                </div>
+              )}
+              {!cameraActive && (
+                <CameraPreview
+                  step={currentStep}
+                  cameraActive={cameraActive}
+                  roiVisible={roiVisible}
+                  verifyProgress={verifyProgress}
+                  verifyDone={verifyDone}
+                />
+              )}
             </div>
           )}
 
@@ -637,11 +742,11 @@ export function CalibrationPage() {
                 exit={{ opacity: 0, x: -18 }}
                 transition={{ duration: 0.2, ease: [0, 0, 0.2, 1] }}
               >
-                {currentStep === 'connect'     && <ContentConnect cameraActive={cameraActive} onToggle={() => setCameraActive(v => !v)} />}
+                {currentStep === 'connect'     && <ContentConnect cameraActive={cameraActive} cameraError={cameraError} cameraInfo={cameraInfo} sourceMode={sourceMode} onConnect={connectSource} />}
                 {currentStep === 'detect'      && <ContentDetect progress={detectProgress} />}
                 {currentStep === 'perspective' && <ContentPerspective progress={perspectiveProgress} />}
                 {currentStep === 'roi'         && <ContentROI roiVisible={roiVisible} />}
-                {currentStep === 'verify'      && <ContentVerify running={!verifyDone && verifyProgress > 0} done={verifyDone} onStart={runVerify} />}
+                {currentStep === 'verify'      && <ContentVerify running={!verifyDone && verifyProgress > 0} done={verifyDone} onStart={runVerify} result={verifyResult} error={verifyError} />}
                 {currentStep === 'complete'    && <ContentComplete />}
               </motion.div>
             </AnimatePresence>
@@ -691,26 +796,66 @@ export function CalibrationPage() {
 
 // ─── Step content panels ──────────────────────────────────────────────────────────
 
-function ContentConnect({ cameraActive, onToggle }: { cameraActive: boolean; onToggle: () => void }) {
+function ContentConnect({ cameraActive, cameraError, cameraInfo, sourceMode, onConnect }: {
+  cameraActive: boolean;
+  cameraError: string | null;
+  cameraInfo: { label: string; width: number; height: number } | null;
+  sourceMode: 'camera' | 'screen' | null;
+  onConnect: (mode: 'camera' | 'screen') => void;
+}) {
   return (
     <div className="space-y-4 max-w-lg">
-      <StepTitle icon={Camera} title="Camera Connection" desc="Connect the USB capture camera to your workstation" />
+      <StepTitle icon={Camera} title="Camera Connection" desc="Grant access to your device's camera, or share a tab/screen directly" />
       <StepCard>
         <div className="space-y-3">
-          <InfoRow label="Device" value={cameraActive ? 'VITAL CAM v2 — USB-C' : 'Not detected'} color={cameraActive ? '#00FF88' : undefined} />
-          <InfoRow label="Resolution" value={cameraActive ? '1920 × 1080' : '—'} />
-          <InfoRow label="Frame Rate" value={cameraActive ? '30 fps' : '—'} />
-          <InfoRow label="Exposure" value={cameraActive ? 'Auto (3.2ms)' : '—'} />
+          <InfoRow label="Source" value={cameraActive ? (sourceMode === 'screen' ? 'Shared tab/screen' : 'Camera') : 'Not detected'} color={cameraActive ? '#00FF88' : undefined} />
+          <InfoRow label="Device" value={cameraActive ? (cameraInfo?.label || 'Camera') : 'Not detected'} color={cameraActive ? '#00FF88' : undefined} />
+          <InfoRow label="Resolution" value={cameraActive && cameraInfo ? `${cameraInfo.width} × ${cameraInfo.height}` : '—'} />
         </div>
       </StepCard>
-      <Button
-        variant={cameraActive ? 'danger' : 'clinical'}
-        icon={cameraActive ? undefined : <Wifi size={15} />}
-        onClick={onToggle}
-        className="w-full justify-center"
-      >
-        {cameraActive ? 'Disconnect Camera' : 'Connect Camera'}
-      </Button>
+      {cameraActive ? (
+        <Button
+          variant="danger"
+          onClick={() => onConnect(sourceMode ?? 'camera')}
+          className="w-full justify-center"
+        >
+          Disconnect
+        </Button>
+      ) : (
+        <div className="flex flex-col gap-2.5">
+          <Button
+            variant="clinical"
+            icon={<Wifi size={15} />}
+            onClick={() => onConnect('camera')}
+            className="w-full justify-center"
+          >
+            Connect Camera
+          </Button>
+          <Button
+            variant="ghost"
+            icon={<Monitor size={15} />}
+            onClick={() => onConnect('screen')}
+            className="w-full justify-center"
+          >
+            Share a Tab/Screen Instead
+          </Button>
+          <p className="font-display text-[10px] text-[#3D5570] text-center px-2">
+            Testing without a second device? Open Live Monitor in another tab, then share <em>that tab</em> here — no camera or lighting needed, it reads the tab's pixels directly.
+          </p>
+        </div>
+      )}
+      {cameraError && (
+        <motion.div
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex items-center gap-2.5 px-4 py-3 rounded-xl bg-[rgba(255,71,87,0.08)] border border-[rgba(255,71,87,0.25)]"
+        >
+          <div>
+            <div className="font-display text-vital-xs font-medium text-[#FF4757]">Camera access failed</div>
+            <div className="font-display text-[10px] text-[#3D5570] mt-0.5">{cameraError}</div>
+          </div>
+        </motion.div>
+      )}
       {cameraActive && (
         <motion.div
           initial={{ opacity: 0, y: 6 }}
@@ -860,23 +1005,53 @@ function ContentROI({ roiVisible }: { roiVisible: boolean[] }) {
   );
 }
 
-function ContentVerify({ running, done, onStart }: { running: boolean; done: boolean; onStart: () => void }) {
+function ContentVerify({ running, done, onStart, result, error }: {
+  running: boolean;
+  done: boolean;
+  onStart: () => void;
+  result: PipelineReadFrameResult | null;
+  error: string | null;
+}) {
+  const rows = VITAL_REGIONS.map((v) => {
+    let display: string | null = null;
+    let conf = 0;
+    if (result) {
+      if (v.key === 'nibp') {
+        const { nibpSystolic, nibpDiastolic } = result.reading;
+        display = nibpSystolic != null && nibpDiastolic != null ? `${nibpSystolic}/${nibpDiastolic}` : null;
+        conf = result.confidence.nibp ?? 0;
+      } else {
+        const raw = result.reading[v.key as 'hr' | 'spo2' | 'etco2' | 'temp' | 'rr'];
+        display = raw != null ? String(raw) : null;
+        conf = result.confidence[v.key] ?? 0;
+      }
+    }
+    return { ...v, display, conf: Math.round(conf) };
+  });
+  const readCount = rows.filter((r) => r.display !== null).length;
+
   return (
     <div className="space-y-4 max-w-lg">
-      <StepTitle icon={Sliders} title="Verification Test" desc="Comparing OCR output against known monitor values" />
+      <StepTitle icon={Sliders} title="Verification Test" desc="Capturing a live frame and running it through the real OCR pipeline" />
       <StepCard>
-        {done ? (
+        {done && result ? (
           <div className="space-y-0">
-            {VITAL_REGIONS.map((v) => (
+            {rows.map((v) => (
               <div key={v.key} className="flex items-center gap-3 py-2.5 border-b border-monitor-border last:border-0">
                 <div className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ backgroundColor: v.color }} />
                 <span className="font-display text-vital-xs text-[#E8F1FF] w-16">{v.label}</span>
-                <span className="font-mono text-vital-xs text-[#E8F1FF]">{v.value} {v.unit}</span>
+                <span className="font-mono text-vital-xs text-[#E8F1FF]">
+                  {v.display ?? '—'} {v.display ? v.unit : ''}
+                </span>
                 <div className="flex-1 mx-2 h-1.5 bg-monitor-bg rounded-full overflow-hidden">
                   <div className="h-full rounded-full" style={{ width: `${v.conf}%`, backgroundColor: v.color }} />
                 </div>
                 <span className="font-mono text-vital-xs" style={{ color: v.color }}>{v.conf}%</span>
-                <CheckCircle size={13} className="text-[#00FF88]" />
+                {v.display ? (
+                  <CheckCircle size={13} className="text-[#00FF88]" />
+                ) : (
+                  <span className="font-display text-[9px] text-[#3D5570] uppercase">no read</span>
+                )}
               </div>
             ))}
           </div>
@@ -884,7 +1059,9 @@ function ContentVerify({ running, done, onStart }: { running: boolean; done: boo
           <div className="flex flex-col items-center py-6 gap-4">
             <Target size={28} className="text-[#3D5570]" />
             <p className="font-display text-vital-sm text-[#7A90AA] text-center">
-              {running ? 'Running OCR verification test…' : 'Ready to run verification test'}
+              {running
+                ? 'Capturing frame and running OCR…'
+                : "Point the camera at a screen showing VITAL's colour-coded vitals, then run the test"}
             </p>
             {!running && (
               <Button variant="clinical" onClick={onStart} icon={<Sliders size={15} />}>
@@ -894,14 +1071,34 @@ function ContentVerify({ running, done, onStart }: { running: boolean; done: boo
           </div>
         )}
       </StepCard>
-      {done && (
+      {error && (
+        <motion.div
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex items-center gap-2.5 px-4 py-3 rounded-xl bg-[rgba(255,71,87,0.08)] border border-[rgba(255,71,87,0.25)]"
+        >
+          <span className="font-display text-vital-xs text-[#FF4757]">{error}</span>
+        </motion.div>
+      )}
+      {done && result && readCount > 0 && (
         <motion.div
           initial={{ opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
           className="flex items-center gap-2.5 px-4 py-3 rounded-xl bg-[rgba(0,255,136,0.06)] border border-[rgba(0,255,136,0.2)]"
         >
           <CheckCircle size={15} className="text-[#00FF88] flex-shrink-0" />
-          <span className="font-display text-vital-xs text-[#00FF88]">All vitals verified — avg. confidence 95.0%</span>
+          <span className="font-display text-vital-xs text-[#00FF88]">{readCount} of 4 vitals read from the live camera</span>
+        </motion.div>
+      )}
+      {done && result && readCount === 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex items-center gap-2.5 px-4 py-3 rounded-xl bg-[rgba(255,149,0,0.08)] border border-[rgba(255,149,0,0.25)]"
+        >
+          <span className="font-display text-vital-xs text-[#FF9500]">
+            No vitals detected in this frame — point the camera at a screen displaying VITAL's colour-coded readout and try again.
+          </span>
         </motion.div>
       )}
     </div>

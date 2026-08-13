@@ -5,7 +5,6 @@ import { SurgeryHeader }  from './components/SurgeryHeader';
 import { WaveformsPanel } from './components/WaveformsPanel';
 import { VitalsGrid }     from './components/VitalsGrid';
 import { AlertsFooter }   from './components/AlertsFooter';
-import { DemoMode }       from '@/features/demo/DemoMode';
 import { useSessionStore } from '@/store/sessionStore';
 import { useVitalsSimulation } from '@/hooks/useVitalsSimulation';
 
@@ -42,7 +41,6 @@ export function SurgeryPage() {
       </div>
 
       <AlertsFooter />
-      <DemoMode />
     </motion.div>
   );
 }

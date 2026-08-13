@@ -1,11 +1,11 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Activity, BarChart2, Settings2, Archive, Cpu, Zap, Power, AlertTriangle } from 'lucide-react';
+import { Activity, BarChart2, Settings2, Archive, Cpu, Power, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSessionStore } from '@/store/sessionStore';
 import { useAlertStore } from '@/store/alertStore';
 import { useVitalsStore } from '@/store/vitalsStore';
-import { useDemoStore } from '@/store/demoStore';
+import { DemoMode } from '@/features/demo/DemoMode';
 
 const NAV_LINKS = [
   { to: '/surgery',     icon: Activity,  label: 'Live Monitor'       },
@@ -19,7 +19,6 @@ export function TopNav() {
   const { activeSession, endSession } = useSessionStore();
   const { active } = useAlertStore();
   const { clearHistory } = useVitalsStore();
-  const { active: demoActive } = useDemoStore();
   const navigate = useNavigate();
 
   const criticalCount = active.filter(a => a.severity === 'critical' && !a.acknowledged).length;
@@ -95,28 +94,8 @@ export function TopNav() {
           )}
         </AnimatePresence>
 
-        {/* Demo mode indicator */}
-        <AnimatePresence>
-          {demoActive && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.85 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.85 }}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border"
-              style={{ background: 'rgba(234,179,8,0.08)', borderColor: 'rgba(234,179,8,0.35)' }}
-              role="status"
-              aria-label="Demo mode active"
-            >
-              <motion.div
-                animate={{ scale: [1, 1.3, 1] }}
-                transition={{ repeat: Infinity, duration: 1.4 }}
-              >
-                <Zap size={12} className="text-yellow-500" />
-              </motion.div>
-              <span className="font-display text-xs font-semibold text-yellow-600">DEMO</span>
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {/* Demo mode control */}
+        <DemoMode />
 
         {/* Session info + end button */}
         {activeSession && (

@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useQuery } from '@tanstack/react-query';
 import {
   Search, Clock, User, Activity, Archive, Stethoscope,
   Download, Eye, FileText, Filter, X, LayoutList,
   Table2, CheckCircle, Lock, Printer,
 } from 'lucide-react';
-import { useSessionStore } from '@/store/sessionStore';
+import { api } from '@/lib/api';
 import { formatDate, formatDuration, cn } from '@/lib/utils';
 import { Button } from '@/design-system/components/Button';
 import { Badge } from '@/design-system/components/Badge';
@@ -461,9 +462,12 @@ function DetailPanel({ session, onPdf }: { session: ArchivedSession; onPdf: () =
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export function ArchivePage() {
-  const { archivedSessions } = useSessionStore();
+  const { data: archivedSessions = [] } = useQuery({
+    queryKey: ['sessions', 'completed'],
+    queryFn: () => api.listSessions('completed'),
+  });
   const [search, setSearch]       = useState('');
-  const [selected, setSelected]   = useState<string | null>(archivedSessions[0]?.id ?? null);
+  const [selected, setSelected]   = useState<string | null>(null);
   const [viewMode, setViewMode]   = useState<'list' | 'table'>('list');
   const [doctorFilter, setDoctorFilter] = useState('All Doctors');
   const [asaFilter, setAsaFilter]       = useState('All ASA');
@@ -486,6 +490,13 @@ export function ArchivePage() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, []);
+
+  // Select the most recent session once the archive loads
+  useEffect(() => {
+    if (selected === null && archivedSessions.length > 0) {
+      setSelected(archivedSessions[0].id);
+    }
+  }, [archivedSessions, selected]);
 
   const filtered = archivedSessions.filter((s) => {
     const searchHit =
@@ -642,7 +653,7 @@ export function ArchivePage() {
         )}
       </AnimatePresence>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden min-h-0">
         {/* ── Left panel: list or table ── */}
         <div className={cn(
           'flex flex-col flex-shrink-0 bg-white border-r border-slate-200',

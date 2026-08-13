@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Camera, Wifi, Activity, BellOff, PauseCircle, PlayCircle, BarChart2, ChevronLeft } from 'lucide-react';
+import { Camera, Wifi, Activity, BellOff, PauseCircle, PlayCircle, BarChart2, Settings2, Archive, Cpu } from 'lucide-react';
 import { useSessionStore } from '@/store/sessionStore';
 import { useAlertStore } from '@/store/alertStore';
 import { useSessionTimer, useClock } from '@/hooks/useSessionTimer';
+import { DemoMode } from '@/features/demo/DemoMode';
 
 export function SurgeryHeader() {
   const { activeSession, pauseSession, resumeSession } = useSessionStore();
@@ -23,7 +24,7 @@ export function SurgeryHeader() {
 
   return (
     <header
-      className="flex items-center gap-0 flex-shrink-0 bg-white border-b border-slate-200"
+      className="flex items-center gap-0 flex-shrink-0 bg-white border-b border-slate-200 overflow-x-auto"
       style={{ height: 56 }}
     >
       {/* Zone 1 — logo + nav back */}
@@ -138,6 +139,38 @@ export function SurgeryHeader() {
 
       {/* Zone 6 — Controls */}
       <div className="flex items-center gap-2 px-4 h-full border-l border-slate-200 flex-shrink-0">
+        {/* Cross-page navigation — Live Monitor has no shared nav bar, so these
+            are the only way to reach Calibration / Archive / OCR Debug without
+            first detouring through Review. */}
+        <div className="flex items-center gap-1 pr-2 mr-1 border-r border-slate-200">
+          <motion.button
+            onClick={() => navigate('/calibration')}
+            className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+            whileHover={{ scale: 1.06 }} whileTap={{ scale: 0.94 }}
+            title="Calibration" aria-label="Go to Calibration"
+          >
+            <Settings2 size={14} />
+          </motion.button>
+          <motion.button
+            onClick={() => navigate('/archive')}
+            className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+            whileHover={{ scale: 1.06 }} whileTap={{ scale: 0.94 }}
+            title="Archive" aria-label="Go to Session Archive"
+          >
+            <Archive size={14} />
+          </motion.button>
+          <motion.button
+            onClick={() => navigate('/ocr-debug')}
+            className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+            whileHover={{ scale: 1.06 }} whileTap={{ scale: 0.94 }}
+            title="OCR Debug" aria-label="Go to OCR Pipeline Debug"
+          >
+            <Cpu size={14} />
+          </motion.button>
+        </div>
+
+        <DemoMode />
+
         {/* Camera */}
         <motion.button
           onClick={() => setCaptureOn(v => !v)}
