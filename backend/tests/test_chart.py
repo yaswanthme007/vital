@@ -113,3 +113,38 @@ def test_chart_with_no_readings_yet_has_a_single_all_null_row():
     assert len(chart["rows"]) == 1
     assert chart["rows"][0]["hr"] is None
     assert chart["vitalSummary"]["avgHr"] == 0.0
+
+
+def test_chart_matches_each_field_to_its_own_nearest_observation():
+    """M5.7: post-reconcile-gating persistence writes sparse rows (only the
+    fields a tick actually confirmed). A mark's HR and SpO2 must each be
+    nearest-matched independently, not both forced to whatever single row
+    happens to be nearest overall — otherwise a mark can show a stale/null
+    SpO2 even though a SpO2 observation exists closer in time than the row
+    that supplied HR."""
+    session = _create_session()
+    sid = session["id"]
+    start = int(session["startTime"])
+
+    db = SessionLocal()
+    # Mark 0 (timestamp=start): only HR was confirmed this tick.
+    repo.save_reading(db, sid, {"hr": 70, "timestamp": start}, source="camera")
+    # A SpO2-only observation much closer to mark 0 than mark 1 — the
+    # pre-M5.7 "one nearest row" approach would never surface this value at
+    # mark 0, because the row nearest to mark 0 overall is the HR-only row
+    # immediately above.
+    repo.save_reading(db, sid, {"spo2": 97, "timestamp": start + 10_000}, source="camera")
+    # Mark 1 (timestamp=start+INTERVAL_MS): only HR confirmed again.
+    repo.save_reading(db, sid, {"hr": 80, "timestamp": start + INTERVAL_MS}, source="camera")
+    db.close()
+
+    r = client.get(f"/api/sessions/{sid}/chart", params={"intervalMinutes": 5})
+    assert r.status_code == 200
+    rows = r.json()["rows"]
+
+    assert rows[0]["hr"] == 70
+    assert rows[0]["spo2"] == 97, "SpO2 must come from its own nearest observation, not a row missing it"
+    assert rows[1]["hr"] == 80
+    # The SpO2 observation is closer to mark 0 (10s away) than mark 1
+    # (INTERVAL_MS - 10s away), so it must NOT also be attributed to mark 1.
+    assert rows[1]["spo2"] == 97

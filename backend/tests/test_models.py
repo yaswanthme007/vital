@@ -242,15 +242,40 @@ def test_drug_event_camel_keys():
 
 
 def test_calibration_profile_instantiate():
+    """M5.2 superseded this shape: `homography`/`color_map` (never
+    referenced by anything — see docs/ARCHITECTURE.md's audit of the
+    pre-M5.2 model) are gone, `roi_boxes` values are now NormalizedBox
+    objects (not raw [x,y,w,h] pixel lists — M5.2 stores boxes normalized
+    so a profile survives a resolution change, see
+    app.models.calibration.NormalizedBox), and reference_width/height +
+    field_meta + updated_at + is_active were added. See
+    docs/M5_2_REAL_CALIBRATION_REPORT.md sec 4 for the full schema
+    rationale. This test's job — pin the wire shape so a future milestone
+    can't silently change it without updating this assertion — is
+    unchanged; only the pinned shape itself is updated.
+
+    M5.3 extends it again, by exactly two fields: `hasReferenceFrame` and
+    `referenceFrameSha256`. Both describe the reference frame that
+    app.pipeline.layout_tracker re-anchors the calibrated boxes to, and both
+    were added only once that consumer existed — the condition the M5.2
+    model docstring set for adding anything here, after ARCHITECTURE.md
+    found the pre-M5.2 `homography` field referenced by nothing. Note what
+    is still absent: no homography, no keypoints, no descriptors. The anchor
+    is the reference IMAGE, stored in its own table
+    (app.db.models.CalibrationReferenceFrameRow) and re-featurised on load;
+    see docs/M5_3_LAYOUT_TRACKING_REPORT.md for that tradeoff. This
+    assertion is updated, never loosened."""
     profile = CalibrationProfile(
         id="CAL-1",
         theatre_id="T-1",
         camera_id="CAM-1",
         layout_id="LAYOUT-1",
-        homography=[[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-        roi_boxes={"hr": [322, 22, 174, 68]},
-        color_map={"hr": "#00FF88"},
+        reference_width=1280,
+        reference_height=720,
+        roi_boxes={"hr": {"x": 0.5, "y": 0.05, "w": 0.15, "h": 0.1}},
+        field_meta={"hr": {"verified": True, "verified_value": "74", "verified_confidence": 95.0}},
         created_at=1000,
+        updated_at=1000,
     )
     data = profile.model_dump(by_alias=True)
     assert set(data.keys()) == {
@@ -258,11 +283,18 @@ def test_calibration_profile_instantiate():
         "theatreId",
         "cameraId",
         "layoutId",
-        "homography",
+        "version",
+        "referenceWidth",
+        "referenceHeight",
         "roiBoxes",
-        "colorMap",
+        "fieldMeta",
         "createdAt",
+        "updatedAt",
+        "isActive",
+        "hasReferenceFrame",
+        "referenceFrameSha256",
     }
+    assert data["roiBoxes"]["hr"] == {"x": 0.5, "y": 0.05, "w": 0.15, "h": 0.1}
 
 
 def test_populate_by_name_accepts_snake_case_input():

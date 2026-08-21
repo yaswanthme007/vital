@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
 import {
   Search, Clock, User, Activity, Archive, Stethoscope,
   Download, Eye, FileText, Filter, X, LayoutList,
-  Table2, CheckCircle, Lock, Printer,
+  Table2, CheckCircle, Lock, Printer, ArrowRight, Hourglass,
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { formatDate, formatDuration, cn } from '@/lib/utils';
@@ -37,30 +38,11 @@ function durationOf(s: ArchivedSession) {
 // ─── PDF Preview Component ────────────────────────────────────────────────────
 
 function PdfPreview({ session, onClose }: { session: ArchivedSession; onClose: () => void }) {
-  const [generating, setGenerating] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [ready, setReady] = useState(false);
-  const ivRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
-
-  const generate = () => {
-    setGenerating(true);
-    setProgress(0);
-    let p = 0;
-    ivRef.current = setInterval(() => {
-      p += Math.random() * 8 + 4;
-      if (p >= 100) {
-        setProgress(100);
-        setReady(true);
-        setGenerating(false);
-        clearInterval(ivRef.current);
-      } else {
-        setProgress(p);
-      }
-    }, 100);
-  };
-
-  useEffect(() => () => clearInterval(ivRef.current), []);
-
+  // M5.8.1: this modal only ever opens from an action that's gated on
+  // session.pdfUrl being present (TableRow/DetailPanel's onPdf) -- POST
+  // /sign already wrote the real PDF to disk before that url exists. There
+  // is nothing left to "generate" here; showing a fake progress bar for a
+  // file that's already on disk was simulating work that wasn't happening.
   return (
     <motion.div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
@@ -84,27 +66,19 @@ function PdfPreview({ session, onClose }: { session: ArchivedSession; onClose: (
             <span className="font-display text-sm font-medium text-slate-200">
               Anaesthesia Record — {session.patient.id}
             </span>
-            {ready && <Badge variant="success" size="xs">Ready</Badge>}
+            <Badge variant="success" size="xs">Signed</Badge>
           </div>
           <div className="flex items-center gap-1.5">
-            {ready && (
-              <>
-                <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors font-display text-xs">
-                  <Printer size={13} /> Print
-                </button>
-                <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors font-display text-xs">
-                  <Download size={13} /> Download
-                </button>
-              </>
-            )}
-            {!ready && !generating && (
-              <button
-                onClick={generate}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors font-display text-xs"
-              >
-                <FileText size={13} /> Generate PDF
-              </button>
-            )}
+            <button
+              onClick={() => window.print()}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors font-display text-xs">
+              <Printer size={13} /> Print
+            </button>
+            <button
+              onClick={() => window.open(api.reportPdfUrl(session.id), '_blank', 'noopener')}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-colors font-display text-xs">
+              <Download size={13} /> Download
+            </button>
             <button
               onClick={onClose}
               className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition-colors ml-1"
@@ -113,16 +87,6 @@ function PdfPreview({ session, onClose }: { session: ArchivedSession; onClose: (
             </button>
           </div>
         </div>
-
-        {/* PDF generation progress */}
-        {generating && (
-          <div className="px-5 py-3 bg-slate-700 border-t border-slate-600 flex items-center gap-3 flex-shrink-0">
-            <div className="flex-1">
-              <ProgressBar value={progress} size="sm" color="#32ADE6" animated />
-            </div>
-            <span className="font-mono text-xs text-slate-300 w-10 text-right">{Math.round(progress)}%</span>
-          </div>
-        )}
 
         {/* PDF document */}
         <div className="flex-1 overflow-y-auto bg-slate-100 p-6">
@@ -142,7 +106,9 @@ function PdfPreview({ session, onClose }: { session: ArchivedSession; onClose: (
             {/* Watermark / status bar */}
             <div className="flex items-center gap-2 px-8 py-2 bg-green-50 border-b border-green-200">
               <Lock size={12} className="text-green-600" />
-              <span className="font-display text-xs text-green-700 font-medium">Digitally signed · Read-only · {formatDate(session.startTime)}</span>
+              <span className="font-display text-xs text-green-700 font-medium">
+                Digitally signed · Read-only · {formatDate(session.signedAt ?? session.startTime)}
+              </span>
             </div>
 
             <div className="px-8 py-6 space-y-6">
@@ -182,7 +148,7 @@ function PdfPreview({ session, onClose }: { session: ArchivedSession; onClose: (
                     { label: 'Avg HR',    value: `${session.vitalSummary.avgHr}`,    unit: 'bpm',  color: '#00AA55' },
                     { label: 'Min SpO₂',  value: `${session.vitalSummary.minSpo2}`,  unit: '%',    color: '#0088AA' },
                     { label: 'Avg EtCO₂', value: `${session.vitalSummary.avgEtco2}`, unit: 'mmHg', color: '#AA8800' },
-                    { label: 'Duration',  value: `${session.vitalSummary.durationMin}`, unit: 'min', color: '#7744AA' },
+                    { label: 'Duration',  value: session.vitalSummary.durationMin.toFixed(1), unit: 'min', color: '#7744AA' },
                   ].map(({ label, value, unit, color }) => (
                     <div
                       key={label}
@@ -199,18 +165,32 @@ function PdfPreview({ session, onClose }: { session: ArchivedSession; onClose: (
 
               <hr className="border-slate-100" />
 
-              {/* AI OCR summary */}
+              {/* AI OCR summary -- M5.7: real numbers from
+                  session.observationStats (backend/app/db/repo.py's
+                  _observation_stats, computed from this session's own
+                  persisted vital_readings), not a hardcoded fixture. The
+                  Archive must never claim an observation happened if the
+                  camera did not actually confirm it. */}
               <section>
                 <h3 className="font-display text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-1.5">
                   <FileText size={11} /> AI Processing Summary
                 </h3>
                 <div className="space-y-2">
                   {[
-                    { label: 'Total frames processed', value: '3,847' },
-                    { label: 'OCR confidence (avg)',   value: '94.2%' },
-                    { label: 'Flagged readings',        value: '4' },
-                    { label: 'Human corrections',       value: '3' },
-                    { label: 'Auto-dismissed',          value: '1' },
+                    { label: 'Observations recorded',  value: session.observationStats.readingsCount.toLocaleString() },
+                    { label: 'Confirmed field values',  value: session.observationStats.confirmedObservations.toLocaleString() },
+                    {
+                      label: 'OCR confidence (avg)',
+                      value: session.observationStats.avgConfidence != null
+                        ? `${session.observationStats.avgConfidence.toFixed(1)}%` : '—',
+                    },
+                    { label: 'Flagged readings', value: String(session.flaggedCount ?? 0) },
+                    {
+                      label: 'Source',
+                      value: session.observationStats.source
+                        ? session.observationStats.source[0].toUpperCase() + session.observationStats.source.slice(1)
+                        : '—',
+                    },
                   ].map(({ label, value }) => (
                     <div key={label} className="flex items-center justify-between py-1.5 border-b border-slate-50">
                       <span className="font-display text-xs text-slate-500">{label}</span>
@@ -232,8 +212,10 @@ function PdfPreview({ session, onClose }: { session: ArchivedSession; onClose: (
                     <CheckCircle size={14} className="text-green-600" />
                     <span className="font-display text-xs font-semibold text-green-700">Record reviewed and signed</span>
                   </div>
-                  <div className="font-display text-xs text-green-600">{session.anesthetist}</div>
-                  <div className="font-display text-[10px] text-green-500 mt-0.5">{formatDate(session.endTime ?? session.startTime)} · Digital signature verified</div>
+                  <div className="font-display text-xs text-green-600">{session.signedBy ?? session.anesthetist}</div>
+                  <div className="font-display text-[10px] text-green-500 mt-0.5">
+                    {session.signedAt != null ? formatDate(session.signedAt) : formatDate(session.endTime ?? session.startTime)} · Digital signature verified
+                  </div>
                 </div>
               </section>
             </div>
@@ -284,7 +266,14 @@ function SessionCard({
       <div className="mt-1.5 flex items-center gap-3 text-[10px] font-display text-slate-400">
         <span className="flex items-center gap-1"><Clock size={10} />{durationOf(session)}</span>
         <span className="flex items-center gap-1"><Stethoscope size={10} />{session.anesthetist.replace('Dr. ', '')}</span>
-        <span className="ml-auto font-mono text-green-600">✓ Signed</span>
+        {/* M5.8.1: was hardcoded "✓ Signed" for every row regardless of
+            whether repo.sign_session had actually run -- session.signedAt
+            is the real, durable signal (set once by POST /sign). */}
+        {session.signedAt != null ? (
+          <span className="ml-auto font-mono text-green-600">✓ Signed</span>
+        ) : (
+          <span className="ml-auto font-mono text-amber-600">Pending sign-off</span>
+        )}
       </div>
     </motion.button>
   );
@@ -329,18 +318,28 @@ function TableRow({
       <td className="px-4 py-3 font-display text-xs text-slate-500">{formatDate(session.startTime)}</td>
       <td className="px-4 py-3 font-display text-xs text-slate-500">{durationOf(session)}</td>
       <td className="px-4 py-3">
-        <span className="inline-flex items-center gap-1 text-[10px] font-display text-green-600">
-          <CheckCircle size={10} /> Signed
-        </span>
+        {session.signedAt != null ? (
+          <span className="inline-flex items-center gap-1 text-[10px] font-display text-green-600">
+            <CheckCircle size={10} /> Signed
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 text-[10px] font-display text-amber-600">
+            <Hourglass size={10} /> Pending sign-off
+          </span>
+        )}
       </td>
       <td className="px-4 py-3">
-        <button
-          onClick={onPdf}
-          className="p-1.5 rounded-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
-          title="View PDF"
-        >
-          <Eye size={14} />
-        </button>
+        {session.pdfUrl ? (
+          <button
+            onClick={onPdf}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+            title="View PDF"
+          >
+            <Eye size={14} />
+          </button>
+        ) : (
+          <span className="font-display text-[10px] text-slate-300">—</span>
+        )}
       </td>
     </motion.tr>
   );
@@ -348,7 +347,10 @@ function TableRow({
 
 // ─── Detail panel ─────────────────────────────────────────────────────────────
 
-function DetailPanel({ session, onPdf }: { session: ArchivedSession; onPdf: () => void }) {
+function DetailPanel({ session, onPdf, onDownload }: { session: ArchivedSession; onPdf: () => void; onDownload: () => void }) {
+  const navigate = useNavigate();
+  const isSigned = session.signedAt != null;
+
   return (
     <motion.div
       key={session.id}
@@ -393,12 +395,21 @@ function DetailPanel({ session, onPdf }: { session: ArchivedSession; onPdf: () =
         </div>
         {/* Actions */}
         <div className="flex gap-2 pt-3 border-t border-slate-100">
-          <Button variant="outline" size="sm" icon={<Eye size={14} />} onClick={onPdf} className="flex-1 justify-center">
-            View Record
-          </Button>
-          <Button variant="outline" size="sm" icon={<Download size={14} />} onClick={onPdf} className="flex-1 justify-center">
-            Download PDF
-          </Button>
+          {session.pdfUrl ? (
+            <>
+              <Button variant="outline" size="sm" icon={<Eye size={14} />} onClick={onPdf} className="flex-1 justify-center">
+                View Record
+              </Button>
+              <Button variant="outline" size="sm" icon={<Download size={14} />} onClick={onDownload} className="flex-1 justify-center">
+                Download PDF
+              </Button>
+            </>
+          ) : (
+            <Button variant="primary" size="sm" icon={<ArrowRight size={14} />} className="flex-1 justify-center"
+              onClick={() => navigate(`/review/${session.id}`)}>
+              Continue to Review &amp; Sign-off
+            </Button>
+          )}
         </div>
       </div>
 
@@ -410,7 +421,7 @@ function DetailPanel({ session, onPdf }: { session: ArchivedSession; onPdf: () =
             { label: 'Avg HR',    value: session.vitalSummary.avgHr,      unit: 'bpm',  color: '#00AA55' },
             { label: 'Min SpO₂',  value: session.vitalSummary.minSpo2,    unit: '%',    color: '#0088AA' },
             { label: 'Avg EtCO₂', value: session.vitalSummary.avgEtco2,   unit: 'mmHg', color: '#AA8800' },
-            { label: 'Duration',  value: session.vitalSummary.durationMin, unit: 'min',  color: '#7744AA' },
+            { label: 'Duration',  value: session.vitalSummary.durationMin.toFixed(1), unit: 'min',  color: '#7744AA' },
           ].map(({ label, value, unit, color }) => (
             <div
               key={label}
@@ -425,14 +436,21 @@ function DetailPanel({ session, onPdf }: { session: ArchivedSession; onPdf: () =
         </div>
       </div>
 
-      {/* AI processing */}
+      {/* AI processing -- M5.7: real numbers from session.observationStats,
+          replacing what used to be a hardcoded '3,847 frames / 94.2%'
+          fixture shown identically for every session regardless of
+          whether the camera confirmed anything at all. */}
       <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
         <h3 className="font-display font-semibold text-slate-800 mb-3 text-sm">AI Processing</h3>
         <div className="space-y-2.5">
           {[
-            { label: 'Frames processed', value: '3,847', pct: 100 },
-            { label: 'Avg confidence',   value: '94.2%', pct: 94  },
-            { label: 'Human review',     value: '4 items', pct: 100 },
+            { label: 'Observations recorded', value: session.observationStats.readingsCount.toLocaleString(), pct: 100 },
+            {
+              label: 'Avg confidence',
+              value: session.observationStats.avgConfidence != null ? `${session.observationStats.avgConfidence.toFixed(1)}%` : '—',
+              pct: session.observationStats.avgConfidence ?? 0,
+            },
+            { label: 'Flagged readings', value: `${session.flaggedCount ?? 0} item${(session.flaggedCount ?? 0) === 1 ? '' : 's'}`, pct: 100 },
           ].map(({ label, value, pct }) => (
             <div key={label}>
               <div className="flex items-center justify-between mb-1">
@@ -447,13 +465,25 @@ function DetailPanel({ session, onPdf }: { session: ArchivedSession; onPdf: () =
 
       {/* Sign-off */}
       <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
-        <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl bg-green-50 border border-green-200">
-          <CheckCircle size={16} className="text-green-500 flex-shrink-0" />
-          <div>
-            <div className="font-display text-xs font-semibold text-green-700">Signed & locked</div>
-            <div className="font-display text-[10px] text-green-500 mt-0.5">{session.anesthetist} · {formatDate(session.startTime)}</div>
+        {isSigned ? (
+          <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl bg-green-50 border border-green-200">
+            <CheckCircle size={16} className="text-green-500 flex-shrink-0" />
+            <div>
+              <div className="font-display text-xs font-semibold text-green-700">Signed &amp; locked</div>
+              <div className="font-display text-[10px] text-green-500 mt-0.5">
+                {session.signedBy ?? session.anesthetist} · {formatDate(session.signedAt!)}
+              </div>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl bg-amber-50 border border-amber-200">
+            <Hourglass size={16} className="text-amber-500 flex-shrink-0" />
+            <div>
+              <div className="font-display text-xs font-semibold text-amber-700">Pending sign-off</div>
+              <div className="font-display text-[10px] text-amber-500 mt-0.5">This case was ended but has not been reviewed and signed yet.</div>
+            </div>
+          </div>
+        )}
       </div>
     </motion.div>
   );
@@ -736,6 +766,7 @@ export function ArchivePage() {
                   key={selectedSession.id}
                   session={selectedSession}
                   onPdf={() => openPdf(selectedSession)}
+                  onDownload={() => window.open(api.reportPdfUrl(selectedSession.id), '_blank', 'noopener')}
                 />
               ) : (
                 <motion.div

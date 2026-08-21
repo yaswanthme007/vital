@@ -1,7 +1,27 @@
-# VITAL — Stage-2 Demo Runbook
+# VITAL — Demo Runbooks
+
+> **Which runbook do you want?**
+>
+> - **[The camera demo](CAMERA_DEMO.md)** — calibrate against a live monitor,
+>   then stream real camera-derived vitals. This is the M5-era product and the
+>   one to show judges. Rehearsed end-to-end in M5.6.
+> - **The Stage-2 runbook below** — the synthetic-feed + signed-PDF demo. It
+>   predates the camera pipeline and is still the right **fallback** if the
+>   camera path fails on stage: it needs no camera, no calibration, and no
+>   frontend.
+
+---
+
+# VITAL — Stage-2 Demo Runbook (synthetic feed + signed PDF)
 
 Follow this verbatim. Every command is copy-pasteable; nothing here needs
 editing except the WS URL `demo_run.py` prints at the end.
+
+> **Accuracy note (M5.6).** The "fully offline" line below is true of the
+> **backend** — it makes no outbound calls. The **frontend** loads two display
+> fonts from `fonts.googleapis.com`. With no internet the app still works and
+> falls back to system fonts; open it once while online beforehand so the
+> browser has them cached.
 
 ## One-time setup (do this before you're on stage)
 

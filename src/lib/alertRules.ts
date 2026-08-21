@@ -11,37 +11,51 @@ export const ALERT_THROTTLE_WINDOW_MS = 30_000;
 // intentionally NOT checked here, matching the backend. Runs on every
 // updateVitals() call regardless of source (live camera feed or Demo Mode),
 // so both paths raise the same alerts the same way.
-export function checkAlerts(reading: VitalReading): NewAlert[] {
+//
+// M5.7: param widened to Partial<VitalReading> so vitalsStore.updateVitals
+// can pass a CONFIRMED-ONLY view (held/baseline fields simply absent) for a
+// camera session. Each field is destructured down to `?? NaN` below — every
+// comparison against NaN is false, so a missing field is silently skipped
+// (the same effective "no data, don't alert" outcome the backend's own
+// None-check gives), and it keeps every value passed into an Alert's
+// `value: number` field actually typed as `number`, not `number|undefined`.
+// A type-level relaxation only: no behaviour change for any existing
+// fully-populated caller (Demo Mode, synthetic).
+export function checkAlerts(reading: Partial<VitalReading>): NewAlert[] {
   const alerts: NewAlert[] = [];
+  const spo2 = reading.spo2 ?? NaN;
+  const hr = reading.hr ?? NaN;
+  const etco2 = reading.etco2 ?? NaN;
+  const temp = reading.temp ?? NaN;
 
-  if (reading.spo2 <= 90) {
-    alerts.push({ vitalType: 'spo2', severity: 'critical', message: 'SpO₂ CRITICALLY LOW', value: reading.spo2, unit: '%' });
-  } else if (reading.spo2 <= 94) {
-    alerts.push({ vitalType: 'spo2', severity: 'warning', message: 'SpO₂ Low', value: reading.spo2, unit: '%' });
+  if (spo2 <= 90) {
+    alerts.push({ vitalType: 'spo2', severity: 'critical', message: 'SpO₂ CRITICALLY LOW', value: spo2, unit: '%' });
+  } else if (spo2 <= 94) {
+    alerts.push({ vitalType: 'spo2', severity: 'warning', message: 'SpO₂ Low', value: spo2, unit: '%' });
   }
 
-  if (reading.hr >= 130) {
-    alerts.push({ vitalType: 'hr', severity: 'critical', message: 'Heart Rate HIGH', value: reading.hr, unit: 'bpm' });
-  } else if (reading.hr >= 110) {
-    alerts.push({ vitalType: 'hr', severity: 'warning', message: 'Heart Rate Elevated', value: reading.hr, unit: 'bpm' });
-  } else if (reading.hr <= 40) {
-    alerts.push({ vitalType: 'hr', severity: 'critical', message: 'Heart Rate CRITICALLY LOW', value: reading.hr, unit: 'bpm' });
-  } else if (reading.hr <= 50) {
-    alerts.push({ vitalType: 'hr', severity: 'warning', message: 'Heart Rate Low', value: reading.hr, unit: 'bpm' });
+  if (hr >= 130) {
+    alerts.push({ vitalType: 'hr', severity: 'critical', message: 'Heart Rate HIGH', value: hr, unit: 'bpm' });
+  } else if (hr >= 110) {
+    alerts.push({ vitalType: 'hr', severity: 'warning', message: 'Heart Rate Elevated', value: hr, unit: 'bpm' });
+  } else if (hr <= 40) {
+    alerts.push({ vitalType: 'hr', severity: 'critical', message: 'Heart Rate CRITICALLY LOW', value: hr, unit: 'bpm' });
+  } else if (hr <= 50) {
+    alerts.push({ vitalType: 'hr', severity: 'warning', message: 'Heart Rate Low', value: hr, unit: 'bpm' });
   }
 
-  if (reading.etco2 >= 55) {
-    alerts.push({ vitalType: 'etco2', severity: 'critical', message: 'EtCO₂ CRITICALLY HIGH', value: reading.etco2, unit: 'mmHg' });
-  } else if (reading.etco2 >= 50) {
-    alerts.push({ vitalType: 'etco2', severity: 'warning', message: 'EtCO₂ Elevated', value: reading.etco2, unit: 'mmHg' });
+  if (etco2 >= 55) {
+    alerts.push({ vitalType: 'etco2', severity: 'critical', message: 'EtCO₂ CRITICALLY HIGH', value: etco2, unit: 'mmHg' });
+  } else if (etco2 >= 50) {
+    alerts.push({ vitalType: 'etco2', severity: 'warning', message: 'EtCO₂ Elevated', value: etco2, unit: 'mmHg' });
   }
 
-  if (reading.temp >= 39.5) {
-    alerts.push({ vitalType: 'temp', severity: 'critical', message: 'Hyperthermia', value: reading.temp, unit: '°C' });
-  } else if (reading.temp >= 38.5) {
-    alerts.push({ vitalType: 'temp', severity: 'warning', message: 'Fever', value: reading.temp, unit: '°C' });
-  } else if (reading.temp <= 35.5) {
-    alerts.push({ vitalType: 'temp', severity: 'warning', message: 'Hypothermia Risk', value: reading.temp, unit: '°C' });
+  if (temp >= 39.5) {
+    alerts.push({ vitalType: 'temp', severity: 'critical', message: 'Hyperthermia', value: temp, unit: '°C' });
+  } else if (temp >= 38.5) {
+    alerts.push({ vitalType: 'temp', severity: 'warning', message: 'Fever', value: temp, unit: '°C' });
+  } else if (temp <= 35.5) {
+    alerts.push({ vitalType: 'temp', severity: 'warning', message: 'Hypothermia Risk', value: temp, unit: '°C' });
   }
 
   return alerts;

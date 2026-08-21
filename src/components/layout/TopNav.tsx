@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Activity, BarChart2, Settings2, Archive, Cpu, Power, AlertTriangle } from 'lucide-react';
@@ -5,10 +6,15 @@ import { cn } from '@/lib/utils';
 import { useSessionStore } from '@/store/sessionStore';
 import { useAlertStore } from '@/store/alertStore';
 import { useVitalsStore } from '@/store/vitalsStore';
-import { DemoMode } from '@/features/demo/DemoMode';
+import { ConfirmDialog } from '@/design-system/components/Dialog';
 
-const NAV_LINKS = [
-  { to: '/surgery',     icon: Activity,  label: 'Live Monitor'       },
+// M5.7: 'Active Operation' is NOT a permanent nav item the way the other
+// four are -- it is the way back into the running camera-tracking
+// workspace from Review/Archive/Calibration, and only means something
+// while a session is actually active. Rendering it unconditionally (the
+// pre-M5.7 'Live Monitor' link) suggested a standalone dashboard that
+// exists independent of any case, which is not what this product is.
+const BASE_LINKS = [
   { to: '/review',      icon: BarChart2,  label: 'Review & Sign-off'  },
   { to: '/archive',     icon: Archive,    label: 'Archive'            },
   { to: '/calibration', icon: Settings2,  label: 'Calibration'       },
@@ -18,15 +24,29 @@ const NAV_LINKS = [
 export function TopNav() {
   const { activeSession, endSession } = useSessionStore();
   const { active } = useAlertStore();
+  const navLinks = activeSession
+    ? [{ to: '/operation', icon: Activity, label: 'Active Operation' }, ...BASE_LINKS]
+    : BASE_LINKS;
   const { clearHistory } = useVitalsStore();
   const navigate = useNavigate();
+  const [endConfirmOpen, setEndConfirmOpen] = useState(false);
 
   const criticalCount = active.filter(a => a.severity === 'critical' && !a.acknowledged).length;
 
+  // M5.8.1: same End Operation flow as OperationHeader's -- kept here too
+  // since a case can be ended from any of the AppLayout pages (Calibration,
+  // Archive, OCR Debug), not just from Active Operation itself. Navigates
+  // straight to THIS session's Review & Sign-off (not the bare /review,
+  // which only resolves via the last-ended pointer) so the id is never
+  // ambiguous, including immediately after this call — the store's own
+  // activeSession isn't cleared until the backend confirms the end.
   const handleEndSession = () => {
+    if (!activeSession) return;
+    const id = activeSession.id;
     clearHistory();
     endSession();
-    navigate('/landing');
+    setEndConfirmOpen(false);
+    navigate(`/review/${id}`);
   };
 
   return (
@@ -54,7 +74,7 @@ export function TopNav() {
 
       {/* Nav links */}
       <div className="flex items-center gap-0.5 flex-1">
-        {NAV_LINKS.map(({ to, icon: Icon, label }) => (
+        {navLinks.map(({ to, icon: Icon, label }) => (
           <NavLink key={to} to={to}>
             {({ isActive }) => (
               <motion.div
@@ -94,9 +114,6 @@ export function TopNav() {
           )}
         </AnimatePresence>
 
-        {/* Demo mode control */}
-        <DemoMode />
-
         {/* Session info + end button */}
         {activeSession && (
           <div className="flex items-center gap-2 pl-2 border-l border-clinical-border">
@@ -109,7 +126,7 @@ export function TopNav() {
               </div>
             </div>
             <motion.button
-              onClick={handleEndSession}
+              onClick={() => setEndConfirmOpen(true)}
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg font-display text-xs font-medium
                          text-red-500 hover:bg-red-50 hover:text-red-600 border border-transparent hover:border-red-200
                          transition-colors"
@@ -123,6 +140,16 @@ export function TopNav() {
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={endConfirmOpen}
+        onClose={() => setEndConfirmOpen(false)}
+        onConfirm={handleEndSession}
+        title="End this operation?"
+        description="Camera observation and recording will stop. Every observation already recorded stays exactly as captured — you'll be taken to Review & Sign-off for this case."
+        confirmLabel="Yes, End Operation"
+        variant="danger"
+      />
     </nav>
   );
 }

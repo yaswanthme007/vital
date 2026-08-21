@@ -1,26 +1,38 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   AlertTriangle, AlertCircle, CheckCircle2, ChevronRight, ChevronLeft,
-  Edit3, Check, X, Lock, FileText, ZoomIn, ZoomOut,
-  Plus, Pill, Activity, Scissors, ShieldCheck,
-  Download, ArrowRight, Eye, Camera, Clock, Info,
+  Edit3, Check, X, Lock, Activity,
+  ArrowRight, Eye, Clock, Info, Printer, LineChart, TrendingUp,
+  ClipboardList, User, Download, PlayCircle, StopCircle, FileText, Pill,
+  HeartPulse, Droplets, Gauge, Wind, Thermometer,
 } from 'lucide-react';
+import {
+  LineChart as RLineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+} from 'recharts';
+import { deriveLedger, FIELD_TO_VITAL_GROUP, VITAL_FIELDS } from '@/lib/ledger';
+import { computeFieldSummaries, computeObservationStats, VITALS_FIELD_LABELS, VITALS_FIELD_UNITS } from '@/lib/vitalSummary';
+import type { FieldSummary } from '@/lib/vitalSummary';
+import { VITAL_COLORS } from '@/features/calibration/RoiCanvas';
+import { formatTime, formatTimeShort, formatDate, formatDuration, cn } from '@/lib/utils';
+import type { VitalObservationRow, VitalField, VitalType } from '@/types/vitals';
+import type { Session } from '@/types/session';
+import type { AlertDto } from '@/lib/api';
 import { Button } from '@/design-system/components/Button';
 import { ConfidenceBadge, ConfidencePill } from '@/design-system/components/ConfidenceBadge';
-import { Timeline } from '@/design-system/components/Timeline';
-import type { TimelineEvent } from '@/design-system/components/Timeline';
 import { ProgressBar, CircularProgress } from '@/design-system/components/Progress';
 import { Dialog } from '@/design-system/components/Dialog';
 import { useSessionStore } from '@/store/sessionStore';
-import { formatTimeShort, cn } from '@/lib/utils';
+import { useToast } from '@/store/toastStore';
+import { api } from '@/lib/api';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type VitalKey = 'hr' | 'spo2' | 'nibp' | 'etco2' | 'temp' | 'rr';
+type VitalKey = VitalType;
 type ItemStatus = 'pending' | 'corrected' | 'dismissed';
 type SignState = 'idle' | 'confirming' | 'signing' | 'locked';
-type TabId = 'frame' | 'timeline' | 'audit' | 'events';
+type TabId = 'overview' | 'trends' | 'observations' | 'timeline';
 
 interface FlaggedReading {
   id: string;
@@ -36,260 +48,658 @@ interface FlaggedReading {
   frameNote: string;
 }
 
-interface AuditEntry {
-  id: string;
-  timestamp: number;
-  action: 'ai_detect' | 'human_correct' | 'human_dismiss';
-  vital: VitalKey;
-  value: string;
-  prevValue?: string;
-  author: string;
-  confidence?: number;
-}
-
-interface EventMarker {
-  id: string;
-  timestamp: number;
-  label: string;
-  category: 'drug' | 'event' | 'observation';
-}
-
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 const VITAL_CFG: Record<VitalKey, { label: string; color: string; unit: string }> = {
-  hr:    { label: 'Heart Rate', color: '#00FF88', unit: 'bpm'  },
-  spo2:  { label: 'SpO₂',      color: '#00D4FF', unit: '%'    },
-  nibp:  { label: 'NIBP',      color: '#FF4757', unit: 'mmHg' },
-  etco2: { label: 'EtCO₂',     color: '#FFD600', unit: 'mmHg' },
-  temp:  { label: 'Temp',      color: '#FF9500', unit: '°C'   },
-  rr:    { label: 'Resp Rate', color: '#BF5AF2', unit: '/min' },
+  hr:    { label: 'Heart Rate', color: VITAL_COLORS.hr,    unit: 'bpm'  },
+  spo2:  { label: 'SpO₂',      color: VITAL_COLORS.spo2,  unit: '%'    },
+  nibp:  { label: 'NIBP',      color: VITAL_COLORS.nibp,  unit: 'mmHg' },
+  etco2: { label: 'EtCO₂',     color: VITAL_COLORS.etco2, unit: 'mmHg' },
+  temp:  { label: 'Temp',      color: VITAL_COLORS.temp,  unit: '°C'   },
+  rr:    { label: 'Resp Rate', color: VITAL_COLORS.rr,    unit: '/min' },
 };
-
-// SVG frame: 500 x 300. Vital boxes in right panel [x, y, w, h]
-const FRAME_BOUNDS: Record<VitalKey, [number, number, number, number]> = {
-  hr:    [322, 22,  174, 68],
-  spo2:  [322, 92,  174, 68],
-  etco2: [322, 162, 174, 68],
-  nibp:  [322, 232, 174, 66],
-  temp:  [0, 0, 0, 0],
-  rr:    [0, 0, 0, 0],
-};
-
-// ─── Mock Data ────────────────────────────────────────────────────────────────
-
-const T0 = Date.now() - 3600000;
-
-const INITIAL_FLAGGED: FlaggedReading[] = [
-  {
-    id: 'FLAG-001', timestamp: T0 + 1200000, vital: 'hr',
-    aiValue: '142', suggestedValue: '74', unit: 'bpm',
-    confidence: 58, severity: 'critical', status: 'pending',
-    frameNote: 'OCR read "142" — likely digit "1" preceding "42" from adjacent channel label. Sharpness score 0.38.',
-  },
-  {
-    id: 'FLAG-002', timestamp: T0 + 2400000, vital: 'spo2',
-    aiValue: '91', suggestedValue: '97', unit: '%',
-    confidence: 47, severity: 'critical', status: 'pending',
-    frameNote: 'Low confidence on digit boundary. Segment "91" may be "97" — partial occlusion on right edge of display.',
-  },
-  {
-    id: 'FLAG-003', timestamp: T0 + 1800000, vital: 'etco2',
-    aiValue: '18', suggestedValue: '34', unit: 'mmHg',
-    confidence: 64, severity: 'warning', status: 'pending',
-    frameNote: 'Characters "3" and "1" overlap in EtCO₂ zone. Image sharpness 0.41, below threshold 0.60.',
-  },
-  {
-    id: 'FLAG-004', timestamp: T0 + 3000000, vital: 'nibp',
-    aiValue: '165/100', suggestedValue: '128/82', unit: 'mmHg',
-    confidence: 71, severity: 'warning', status: 'pending',
-    frameNote: 'NIBP systolic delta >30 mmHg vs previous reading. Possible misread of leading digit.',
-  },
-];
-
-const MOCK_TIMELINE: TimelineEvent[] = [
-  { id: 'EVT-1', timestamp: T0,           type: 'start',        title: 'Session started',          description: 'Laparoscopic Cholecystectomy commenced. PT-2024-001, ASA II.' },
-  { id: 'EVT-2', timestamp: T0 + 360000,  type: 'drug',         title: 'Propofol administered',     value: '200 mg',  description: 'Induction agent. 2.8 mg/kg IV.',          details: { Dose: '200 mg', Route: 'IV' } },
-  { id: 'EVT-3', timestamp: T0 + 600000,  type: 'drug',         title: 'Fentanyl administered',     value: '100 µg',  description: 'Pre-operative opioid analgesia.' },
-  { id: 'EVT-4', timestamp: T0 + 720000,  type: 'note',         title: 'Intubation',                description: 'ETT placement confirmed via capnography. Cuff inflated.' },
-  { id: 'EVT-5', timestamp: T0 + 900000,  type: 'note',         title: 'Incision',                  description: 'Surgical incision made. Anaesthesia depth confirmed adequate.' },
-  { id: 'EVT-6', timestamp: T0 + 1200000, type: 'alert',        title: 'HR anomaly flagged',        value: '142 bpm', severity: 'critical', description: 'AI detected HR=142. Previous 74 bpm. Delta exceeds threshold.' },
-  { id: 'EVT-7', timestamp: T0 + 1800000, type: 'measurement',  title: 'NIBP measurement',          value: '128/82',  description: 'Routine NIBP cycle triggered by operator.' },
-  { id: 'EVT-8', timestamp: T0 + 2400000, type: 'alert',        title: 'SpO₂ anomaly flagged',      value: '91%',     severity: 'critical', description: 'AI detected SpO₂=91%. Previous 97%. Flagged for review.' },
-  { id: 'EVT-9', timestamp: T0 + 3000000, type: 'drug',         title: 'Rocuronium administered',   value: '50 mg',   description: 'Neuromuscular blockade maintained.',       details: { Dose: '50 mg', Route: 'IV' } },
-];
-
-const INITIAL_AUDIT: AuditEntry[] = [
-  { id: 'AUD-1', timestamp: T0 + 1200000, action: 'ai_detect', vital: 'hr',    value: '142',     author: 'AI Vision', confidence: 58 },
-  { id: 'AUD-2', timestamp: T0 + 2400000, action: 'ai_detect', vital: 'spo2',  value: '91',      author: 'AI Vision', confidence: 47 },
-  { id: 'AUD-3', timestamp: T0 + 1800000, action: 'ai_detect', vital: 'etco2', value: '18',      author: 'AI Vision', confidence: 64 },
-  { id: 'AUD-4', timestamp: T0 + 3000000, action: 'ai_detect', vital: 'nibp',  value: '165/100', author: 'AI Vision', confidence: 71 },
-];
-
-const INITIAL_EVENTS: EventMarker[] = [
-  { id: 'EM-1', timestamp: T0 + 360000,  label: 'Drug: Propofol',  category: 'drug'  },
-  { id: 'EM-2', timestamp: T0 + 600000,  label: 'Drug: Fentanyl',  category: 'drug'  },
-  { id: 'EM-3', timestamp: T0 + 720000,  label: 'Intubation',      category: 'event' },
-  { id: 'EM-4', timestamp: T0 + 900000,  label: 'Incision',        category: 'event' },
-];
-
-const QUICK_EVENTS = [
-  { label: 'Intubation',      icon: Activity, category: 'event'  as const },
-  { label: 'Extubation',      icon: Activity, category: 'event'  as const },
-  { label: 'Incision',        icon: Scissors, category: 'event'  as const },
-  { label: 'Drug: Propofol',  icon: Pill,     category: 'drug'   as const },
-  { label: 'Drug: Fentanyl',  icon: Pill,     category: 'drug'   as const },
-  { label: 'Drug: Rocuronium',icon: Pill,     category: 'drug'   as const },
-];
 
 const TABS: { id: TabId; label: string; icon: React.ElementType }[] = [
-  { id: 'frame',    label: 'Frame Viewer',  icon: Camera   },
-  { id: 'timeline', label: 'Case Timeline', icon: Clock    },
-  { id: 'audit',    label: 'Audit Trail',   icon: FileText },
-  { id: 'events',   label: 'Event Markers', icon: Activity },
+  { id: 'overview',     label: 'Overview',     icon: ClipboardList },
+  { id: 'trends',       label: 'Trends',       icon: TrendingUp    },
+  { id: 'observations', label: 'Observations', icon: LineChart     },
+  { id: 'timeline',     label: 'Timeline',     icon: Clock         },
 ];
 
-// ─── Monitor SVG Content ──────────────────────────────────────────────────────
+// ─── Exceptions & Alerts (M-final: redesigned Flagged Readings sidebar) ──────
+//
+// The OCR pipeline raises a FlaggedReading for TWO structurally different
+// situations (see backend/app/validation/reconcile.py's severity assignment):
+// 'critical' means the raw OCR read was REJECTED this tick (implausible
+// range / rejected jump) -- the displayed value may be a held-over reading,
+// so a human genuinely needs to look. 'warning' covers everything else,
+// including values the pipeline already ACCEPTED at medium confidence or
+// via temporal corroboration -- informational review context, not a
+// blocker. Gating "Sign Off" on every flagged item (the old behaviour)
+// made autonomous continuous monitoring look broken; gating it on genuinely
+// BLOCKING (pending + critical) items only matches the product's real
+// premise: autonomous monitoring with human final sign-off, not a human
+// re-reading every OCR frame.
 
-const ECG_PATH = [
-  'M 0,40 L 8,40',
-  'C 10,40 11,35 13,33 C 15,33 16,40 18,40',
-  'L 21,40 L 23,44 L 27,6 L 31,58 L 35,40',
-  'L 38,40 C 42,40 45,30 48,28 C 51,28 54,40 58,40',
-  'L 88,40 C 90,40 91,35 93,33 C 95,33 96,40 98,40',
-  'L 101,40 L 103,44 L 107,6 L 111,58 L 115,40',
-  'L 118,40 C 122,40 125,30 128,28 C 131,28 134,40 138,40',
-  'L 168,40 C 170,40 171,35 173,33 C 175,33 176,40 178,40',
-  'L 181,40 L 183,44 L 187,6 L 191,58 L 195,40',
-  'L 198,40 C 202,40 205,30 208,28 C 211,28 214,40 218,40',
-  'L 310,40',
-].join(' ');
+type ExceptionCategory = 'critical' | 'lowConfidence' | 'corrected' | 'resolved';
 
-const PLETH_PATH = [
-  'M 0,30',
-  'C 15,30 20,8 30,7 C 40,7 45,30 60,30',
-  'C 75,30 80,8 90,7 C 100,7 105,30 120,30',
-  'C 135,30 140,8 150,7 C 160,7 165,30 180,30',
-  'C 195,30 200,8 210,7 C 220,7 225,30 240,30',
-  'C 255,30 260,8 270,7 C 280,7 285,30 300,30 L 310,30',
-].join(' ');
+const EXCEPTION_CATEGORY_CFG: Record<ExceptionCategory, { label: string; icon: React.ElementType; color: string }> = {
+  critical:      { label: 'Critical alerts', icon: AlertTriangle, color: '#FF3B30' },
+  lowConfidence: { label: 'Low-confidence',  icon: AlertCircle,   color: '#FF9500' },
+  corrected:     { label: 'Corrected',       icon: Edit3,         color: '#30D158' },
+  resolved:      { label: 'Resolved',        icon: CheckCircle2,  color: '#64748B' },
+};
 
-const CAPNO_PATH = [
-  'M 0,38 L 8,38 L 8,8 L 45,8 L 45,38',
-  'L 65,38 L 65,8 L 102,8 L 102,38',
-  'L 122,38 L 122,8 L 159,8 L 159,38',
-  'L 179,38 L 179,8 L 216,8 L 216,38',
-  'L 236,38 L 236,8 L 273,8 L 273,38 L 310,38',
-].join(' ');
-
-interface MonitorContentProps {
-  highlightVital?: VitalKey;
-  showOCR: boolean;
-  flaggedItems: FlaggedReading[];
+function categorize(items: FlaggedReading[]): Record<ExceptionCategory, FlaggedReading[]> {
+  return {
+    critical: items.filter((i) => i.severity === 'critical' && i.status === 'pending'),
+    lowConfidence: items.filter((i) => i.severity === 'warning' && i.status === 'pending'),
+    corrected: items.filter((i) => i.status === 'corrected'),
+    resolved: items.filter((i) => i.status === 'dismissed'),
+  };
 }
 
-function MonitorContent({ highlightVital, showOCR, flaggedItems }: MonitorContentProps) {
+const EMPTY_CATEGORY_MESSAGE: Record<ExceptionCategory, string> = {
+  critical: 'No critical exceptions — nothing blocking sign-off.',
+  lowConfidence: 'No pending low-confidence OCR events.',
+  corrected: 'No corrected readings on this session.',
+  resolved: 'No dismissed readings on this session.',
+};
 
-  const monitorValues: Record<VitalKey, string> = {
-    hr: '74', spo2: '97', etco2: '34', nibp: '128/82', temp: '36.8', rr: '14',
-  };
+// ─── Case Timeline (M-final): derived strictly from persisted data ──────────
+//
+// Every event below comes from a real, already-fetched source -- session
+// start/end/signedAt, session.notes (the same rows Active Operation's
+// quick-mark buttons write), the persisted readings timeline's own first/
+// last rows, and the first persisted critical alert. Nothing here is a
+// synthetic/interpretive timestamp: if a source has no data (no readings,
+// no critical alert, not yet signed), its event is simply omitted.
+
+type CaseEventKind = 'start' | 'observation' | 'alert' | 'note' | 'drug' | 'end' | 'signoff';
+
+interface CaseEvent {
+  id: string;
+  timestamp: number;
+  kind: CaseEventKind;
+  title: string;
+  description?: string;
+  severity?: 'critical' | 'warning';
+  vital?: VitalKey;
+}
+
+function summarizeConfirmedFields(row: VitalObservationRow): string {
+  const parts: string[] = [];
+  for (const field of VITAL_FIELDS) {
+    const v = row[field];
+    if (v == null) continue;
+    parts.push(`${VITALS_FIELD_LABELS[field]} ${v}${VITALS_FIELD_UNITS[field]}`);
+  }
+  return parts.join(', ') || 'No fields confirmed this tick.';
+}
+
+function buildCaseEvents(session: Session, readings: VitalObservationRow[], alerts: AlertDto[]): CaseEvent[] {
+  const events: CaseEvent[] = [
+    { id: 'EVT-start', timestamp: session.startTime, kind: 'start', title: 'Session started', description: 'Case commenced.' },
+  ];
+
+  if (readings.length > 0) {
+    events.push({
+      id: 'EVT-first-obs', timestamp: readings[0].timestamp, kind: 'observation',
+      title: 'First camera observation confirmed', description: summarizeConfirmedFields(readings[0]),
+    });
+  }
+
+  const firstCritical = alerts.filter((a) => a.severity === 'critical').sort((a, b) => a.timestamp - b.timestamp)[0];
+  if (firstCritical) {
+    events.push({
+      id: `EVT-alert-${firstCritical.id}`, timestamp: firstCritical.timestamp, kind: 'alert',
+      title: 'First critical alert', description: firstCritical.message, severity: 'critical',
+      vital: firstCritical.vitalType === 'system' ? undefined : firstCritical.vitalType,
+    });
+  }
+
+  for (const n of session.notes) {
+    events.push({
+      id: `EVT-note-${n.id}`, timestamp: n.timestamp,
+      kind: n.category === 'drug' ? 'drug' : n.category === 'alarm' ? 'alert' : 'note',
+      title: n.text, severity: n.category === 'alarm' ? 'warning' : undefined,
+    });
+  }
+
+  if (readings.length > 1) {
+    const last = readings[readings.length - 1];
+    events.push({
+      id: 'EVT-last-obs', timestamp: last.timestamp, kind: 'observation',
+      title: 'Last camera observation confirmed', description: summarizeConfirmedFields(last),
+    });
+  }
+
+  if (session.endTime != null) {
+    events.push({ id: 'EVT-end', timestamp: session.endTime, kind: 'end', title: 'Operation ended' });
+  }
+
+  if (session.signedAt != null) {
+    events.push({
+      id: 'EVT-signoff', timestamp: session.signedAt, kind: 'signoff', title: 'Signed off',
+      description: `Signed by ${session.signedBy ?? session.anesthetist}`,
+    });
+  }
+
+  return events.sort((a, b) => a.timestamp - b.timestamp);
+}
+
+const CASE_EVENT_CFG: Record<CaseEventKind, { icon: React.ElementType; color: string }> = {
+  start:       { icon: PlayCircle,     color: '#30D158' },
+  observation: { icon: Activity,       color: '#0EA5E9' },
+  alert:       { icon: AlertTriangle,  color: '#FF3B30' },
+  note:        { icon: FileText,       color: '#64748B' },
+  drug:        { icon: Pill,           color: '#8B5CF6' },
+  end:         { icon: StopCircle,     color: '#FF3B30' },
+  signoff:     { icon: Lock,           color: '#30D158' },
+};
+
+const VITAL_EVENT_ICONS: Record<VitalKey, React.ElementType> = {
+  hr: HeartPulse, spo2: Droplets, nibp: Gauge, etco2: Wind, temp: Thermometer, rr: Activity,
+};
+
+function CaseTimelinePanel({ events }: { events: CaseEvent[] }) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  if (events.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-slate-400 gap-2">
+        <Clock size={28} className="opacity-30" />
+        <p className="font-display text-sm">No timeline events yet</p>
+      </div>
+    );
+  }
 
   return (
-    <>
-      {/* Background */}
-      <rect width="500" height="300" rx="6" fill="#060C18" />
-
-      {/* Header bar */}
-      <rect width="500" height="22" fill="#0A1525" />
-      <text x="8" y="15" fill="#3D5570" fontFamily="Share Tech Mono" fontSize="8.5" letterSpacing="0.8">
-        VITAL ANAESTHESIA MONITOR · PT-2024-001 · ASA II
-      </text>
-
-      {/* Faint grid in waveform area */}
-      <g opacity="0.07" stroke="#4A90D9" strokeWidth="0.5">
-        {[60, 100, 140, 180, 220, 260, 295].map(y => (
-          <line key={y} x1="0" y1={y} x2="316" y2={y} />
-        ))}
-        {[62, 125, 187, 250].map(x => (
-          <line key={x} x1={x} y1="22" x2={x} y2="300" />
-        ))}
-      </g>
-
-      {/* ECG waveform */}
-      <g transform="translate(4, 56)">
-        <text x="0" y="-4" fill="#2D4A2D" fontFamily="Share Tech Mono" fontSize="8">ECG II</text>
-        <path d={ECG_PATH} stroke="#00FF88" strokeWidth="1.5" fill="none"
-          style={{ filter: 'drop-shadow(0 0 4px rgba(0,255,136,0.7))' }} />
-      </g>
-
-      {/* Pleth SpO2 waveform */}
-      <g transform="translate(4, 148)">
-        <text x="0" y="-4" fill="#1A3A4A" fontFamily="Share Tech Mono" fontSize="8">SpO₂</text>
-        <path d={PLETH_PATH} stroke="#00D4FF" strokeWidth="1.5" fill="none"
-          style={{ filter: 'drop-shadow(0 0 4px rgba(0,212,255,0.7))' }} />
-      </g>
-
-      {/* Capno EtCO2 waveform */}
-      <g transform="translate(4, 234)">
-        <text x="0" y="-4" fill="#3A3000" fontFamily="Share Tech Mono" fontSize="8">EtCO₂</text>
-        <path d={CAPNO_PATH} stroke="#FFD600" strokeWidth="1.5" fill="none"
-          style={{ filter: 'drop-shadow(0 0 4px rgba(255,214,0,0.6))' }} />
-      </g>
-
-      {/* Divider */}
-      <line x1="318" y1="22" x2="318" y2="300" stroke="#182B42" strokeWidth="1" />
-
-      {/* Vital value boxes */}
-      {(Object.entries(FRAME_BOUNDS) as [VitalKey, [number,number,number,number]][])
-        .filter(([, b]) => b[2] > 0)
-        .map(([vital, [bx, by, bw, bh]]) => {
-          const color = VITAL_CFG[vital].color;
-          const label = VITAL_CFG[vital].label;
-          const unit  = VITAL_CFG[vital].unit;
+    <div className="h-full overflow-y-auto p-5">
+      <p className="font-display text-[10px] text-slate-500 uppercase tracking-wider mb-4">
+        Monitoring Timeline · {events.length} event{events.length === 1 ? '' : 's'} from persisted case data
+      </p>
+      <div className="space-y-0 max-w-2xl">
+        {events.map((e, i) => {
+          const cfg = CASE_EVENT_CFG[e.kind];
+          const Icon = e.vital ? VITAL_EVENT_ICONS[e.vital] : cfg.icon;
+          const color = e.severity === 'critical' ? '#FF3B30' : e.severity === 'warning' ? '#FF9500' : cfg.color;
+          const isLast = i === events.length - 1;
+          const expanded = expandedId === e.id;
           return (
-            <g key={vital}>
-              <rect x={bx} y={by + 2} width={bw} height={bh - 4} rx="3" fill="#0A1525" />
-              <rect x={bx} y={by + 2} width="3" height={bh - 4} rx="1" fill={color} opacity="0.8" />
-              <text x={bx + 9} y={by + 15} fill="#3D5570" fontFamily="Share Tech Mono" fontSize="8">
-                {label.toUpperCase()}
-              </text>
-              <text x={bx + 9} y={by + 50} fill={color} fontFamily="Share Tech Mono" fontSize="28" fontWeight="bold"
-                style={{ filter: `drop-shadow(0 0 8px ${color}55)` }}>
-                {monitorValues[vital]}
-              </text>
-              <text x={bx + 9} y={by + 62} fill="#3D5570" fontFamily="Share Tech Mono" fontSize="8">{unit}</text>
-            </g>
+            <motion.div key={e.id} className="flex gap-3"
+              initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: i * 0.03, duration: 0.2 }}>
+              <div className="flex flex-col items-center flex-shrink-0">
+                <div className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0"
+                  style={{ background: `${color}18`, border: `1px solid ${color}40` }}>
+                  <Icon size={12} style={{ color }} />
+                </div>
+                {!isLast && <div className="w-px flex-1 mt-1 mb-1 bg-slate-200" />}
+              </div>
+              <div className={cn('flex-1 min-w-0', isLast ? 'pb-0' : 'pb-4')}>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-display text-xs font-semibold text-slate-700">{e.title}</span>
+                    {e.severity === 'critical' && (
+                      <span className="font-display text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-red-50 border border-red-200 text-red-600">Critical</span>
+                    )}
+                    {e.severity === 'warning' && (
+                      <span className="font-display text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-600">Alarm</span>
+                    )}
+                  </div>
+                  <span className="font-mono text-[10px] text-slate-400 flex-shrink-0 tabular-nums">{formatTime(e.timestamp)}</span>
+                </div>
+                {e.description && (
+                  <>
+                    <button onClick={() => setExpandedId(expanded ? null : e.id)}
+                      className="flex items-center gap-1 font-display text-[10px] text-slate-400 hover:text-slate-600 transition-colors mt-0.5">
+                      <ChevronRight size={10} className={cn('transition-transform', expanded && 'rotate-90')} />
+                      {expanded ? 'Hide details' : 'Show details'}
+                    </button>
+                    <AnimatePresence>
+                      {expanded && (
+                        <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+                          className="overflow-hidden">
+                          <div className="mt-1.5 p-2.5 rounded-lg bg-slate-50 border border-slate-100">
+                            <p className="font-display text-[11px] text-slate-500 leading-relaxed">{e.description}</p>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </>
+                )}
+              </div>
+            </motion.div>
           );
         })}
+      </div>
+    </div>
+  );
+}
 
-      {/* OCR overlay boxes */}
-      {showOCR && flaggedItems.map(item => {
-        const bounds = FRAME_BOUNDS[item.vital];
-        if (bounds[2] === 0) return null;
-        const [bx, by, bw] = bounds;
-        const isHl = highlightVital === item.vital;
-        const cc = item.confidence >= 80 ? '#30D158' : item.confidence >= 65 ? '#FFD600' : '#FF3B30';
-        const ox = bx + 8; const oy = by + 26; const ow = 112; const oh = 30;
+// ─── Observation Ledger tab (renamed: "Observations") ─────────────────────────
+//
+// M5.7/M5.8: the real, persisted, camera-confirmed observation timeline for
+// this session -- backend/app/db/repo.list_readings via GET
+// /api/sessions/{id}/readings, projected through the SAME deriveLedger()
+// the Active Operation workspace's live ledger uses (src/lib/ledger.ts), so
+// Review shows exactly the history that was actually recorded.
 
-        return (
-          <g key={item.id}>
-            <rect x={ox} y={oy} width={ow} height={oh} rx="2"
-              fill={`${cc}1A`} stroke={cc} strokeWidth={isHl ? 2.5 : 1.5}
-              strokeDasharray={isHl ? undefined : '4 2'} />
-            <text x={ox + 4} y={oy + 22} fill={cc} fontFamily="Share Tech Mono" fontSize="15" fontWeight="bold">
-              {item.aiValue}
-            </text>
-            <rect x={bx + bw - 40} y={oy} width="38" height="14" rx="2" fill={`${cc}30`} />
-            <text x={bx + bw - 38} y={oy + 10} fill={cc} fontFamily="Share Tech Mono" fontSize="8" fontWeight="bold">
-              {item.confidence}%
-            </text>
-            {isHl && (
-              <rect x={bx + 2} y={by + 4} width={bw - 4} height={62} rx="3"
-                fill="none" stroke={cc} strokeWidth="1" opacity="0.4" />
+function ObservationLedgerTab({ readings, loading }: { readings: VitalObservationRow[]; loading: boolean }) {
+  const entries = useMemo(() => deriveLedger(readings).slice().reverse(), [readings]);
+  const sources = useMemo(() => new Set(readings.map((r) => r.source).filter(Boolean)), [readings]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-full text-slate-400">
+        <p className="font-display text-sm">Loading observation ledger…</p>
+      </div>
+    );
+  }
+
+  if (entries.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-slate-400 gap-2">
+        <LineChart size={28} className="opacity-30" />
+        <p className="font-display text-sm">No confirmed camera observations recorded for this case</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full overflow-y-auto p-5">
+      <div className="mb-3 flex items-center gap-2">
+        <span className="font-display text-xs text-slate-400">
+          {readings.length} persisted reading{readings.length === 1 ? '' : 's'} · {entries.length} confirmed value change{entries.length === 1 ? '' : 's'}
+          {sources.size > 0 ? ` · source: ${Array.from(sources).join(', ')}` : ''}
+        </span>
+      </div>
+      <ul className="divide-y divide-slate-100">
+        {entries.map((entry) => (
+          <li key={entry.id} className="flex items-center gap-3 py-2">
+            <div className="w-2 h-2 rounded-sm flex-shrink-0" style={{ backgroundColor: VITAL_COLORS[FIELD_TO_VITAL_GROUP[entry.field]] }} />
+            <span className="font-mono text-xs text-slate-400 w-20 flex-shrink-0">{formatTime(entry.timestamp)}</span>
+            <span className="font-display text-xs text-slate-600 flex-1">{VITALS_FIELD_LABELS[entry.field]}</span>
+            <span className="font-mono text-sm font-semibold text-slate-800">
+              {entry.value} <span className="font-display text-[10px] text-slate-400">{VITALS_FIELD_UNITS[entry.field]}</span>
+            </span>
+            {entry.confidence != null && (
+              <span className="font-mono text-[10px] text-slate-400 w-10 text-right">{Math.round(entry.confidence)}%</span>
             )}
-          </g>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ─── Overview tab ───────────────────────────────────────────────────────────
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-100">
+      <div className="font-display text-[10px] uppercase tracking-wider text-slate-400">{label}</div>
+      <div className="font-display text-xs font-medium mt-0.5 text-slate-800">{value}</div>
+    </div>
+  );
+}
+
+function MonitoringOverviewCards({ summaries }: { summaries: FieldSummary[] }) {
+  const byField = useMemo(() => Object.fromEntries(summaries.map((s) => [s.field, s])) as Record<VitalField, FieldSummary>, [summaries]);
+  const sys = byField.nibpSystolic, dia = byField.nibpDiastolic;
+
+  const cards: { key: VitalKey; label: string; value: string; unit: string; hasData: boolean }[] = [
+    { key: 'hr',    label: 'Heart Rate', value: byField.hr.last != null ? String(byField.hr.last) : '—',       unit: 'bpm',  hasData: byField.hr.count > 0 },
+    { key: 'spo2',  label: 'SpO₂',       value: byField.spo2.last != null ? String(byField.spo2.last) : '—',   unit: '%',    hasData: byField.spo2.count > 0 },
+    { key: 'nibp',  label: 'NIBP',       value: sys.last != null && dia.last != null ? `${sys.last}/${dia.last}` : '—', unit: 'mmHg', hasData: sys.count > 0 || dia.count > 0 },
+    { key: 'etco2', label: 'EtCO₂',      value: byField.etco2.last != null ? String(byField.etco2.last) : '—', unit: 'mmHg', hasData: byField.etco2.count > 0 },
+    { key: 'temp',  label: 'Temp',       value: byField.temp.last != null ? String(byField.temp.last) : '—',   unit: '°C',   hasData: byField.temp.count > 0 },
+    { key: 'rr',    label: 'Resp Rate',  value: byField.rr.last != null ? String(byField.rr.last) : '—',       unit: '/min', hasData: byField.rr.count > 0 },
+  ];
+
+  return (
+    <div className="grid grid-cols-3 md:grid-cols-6 gap-2.5">
+      {cards.map((c) => (
+        <div key={c.key} className={cn('rounded-xl border p-3 text-center', c.hasData ? 'border-slate-200 bg-white' : 'border-slate-100 bg-slate-50')}>
+          <div className="font-display text-[10px] text-slate-400 uppercase tracking-wider mb-1">{c.label}</div>
+          <div className="font-mono text-lg font-semibold" style={{ color: c.hasData ? VITAL_COLORS[c.key] : '#CBD5E1' }}>{c.value}</div>
+          <div className="font-display text-[9px] text-slate-400 mt-0.5">{c.hasData ? c.unit : 'no data'}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+interface LifecycleStep { id: string; label: string; done: boolean; hint?: string }
+
+function LifecycleFlow({ steps }: { steps: LifecycleStep[] }) {
+  return (
+    <div className="flex items-stretch gap-1 overflow-x-auto pb-1">
+      {steps.map((s, i) => (
+        <div key={s.id} className="flex items-center flex-shrink-0">
+          <div className={cn(
+            'flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-xl border min-w-[96px] h-[62px]',
+            s.done ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-slate-200',
+          )}>
+            {s.done ? <CheckCircle2 size={14} className="text-emerald-500" /> : <div className="w-3.5 h-3.5 rounded-full border-2 border-slate-300" />}
+            <span className={cn('font-display text-[10px] text-center leading-tight', s.done ? 'text-emerald-700 font-medium' : 'text-slate-400')}>
+              {s.label}
+            </span>
+            {s.hint && <span className="font-mono text-[9px] text-slate-400">{s.hint}</span>}
+          </div>
+          {i < steps.length - 1 && <ChevronRight size={12} className="text-slate-300 mx-0.5 flex-shrink-0" />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function OverviewTab({
+  session, readings, alerts, loadingAlerts, isSigned,
+}: {
+  session: Session;
+  readings: VitalObservationRow[];
+  alerts: AlertDto[];
+  loadingAlerts: boolean;
+  isSigned: boolean;
+}) {
+  const fieldSummaries = useMemo(() => computeFieldSummaries(readings), [readings]);
+  const stats = useMemo(() => computeObservationStats(readings), [readings]);
+  const duration = session.endTime != null ? formatDuration(session.endTime - session.startTime) : '—';
+  const criticalAlerts = alerts.filter((a) => a.severity === 'critical');
+  const warningAlerts = alerts.filter((a) => a.severity === 'warning');
+  const infoAlerts = alerts.filter((a) => a.severity !== 'critical' && a.severity !== 'warning');
+
+  const cameraSourced = stats.source === 'camera' || stats.source === 'mixed';
+  const lifecycleSteps: LifecycleStep[] = [
+    { id: 'calibration', label: 'Calibration', done: cameraSourced, hint: cameraSourced ? undefined : 'n/a' },
+    { id: 'started', label: 'Monitoring Started', done: true },
+    { id: 'observation', label: 'Continuous Observation', done: readings.length > 0, hint: readings.length > 0 ? `${readings.length} readings` : undefined },
+    { id: 'alerts', label: 'Alerts / Exceptions', done: session.endTime != null, hint: `${alerts.length} alert${alerts.length === 1 ? '' : 's'}` },
+    { id: 'ended', label: 'Monitoring Ended', done: session.endTime != null },
+    { id: 'review', label: 'Review', done: true },
+    { id: 'signoff', label: 'Sign-off', done: isSigned },
+    { id: 'archived', label: 'Archived', done: isSigned },
+  ];
+
+  return (
+    <div className="h-full overflow-y-auto p-5 space-y-6">
+      {/* Operation Summary */}
+      <section>
+        <h3 className="font-display text-xs font-semibold text-slate-600 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+          <ClipboardList size={12} /> Operation Summary
+        </h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+          <InfoRow label="Patient / Case ID" value={session.patient.id} />
+          <InfoRow label="Procedure" value={session.procedure} />
+          <InfoRow label="ASA Class" value={session.patient.asa ? `ASA ${session.patient.asa}` : '—'} />
+          <InfoRow label="Operator / Anaesthetist" value={session.anesthetist} />
+          <InfoRow label="Start Time" value={`${formatDate(session.startTime)} · ${formatTime(session.startTime)}`} />
+          <InfoRow label="End Time" value={session.endTime != null ? `${formatDate(session.endTime)} · ${formatTime(session.endTime)}` : '—'} />
+          <InfoRow label="Duration" value={duration} />
+          <InfoRow label="Status" value={session.signedAt != null ? 'Signed & locked' : session.status === 'completed' ? 'Completed · pending sign-off' : session.status} />
+        </div>
+      </section>
+
+      {/* Monitoring Overview */}
+      <section>
+        <h3 className="font-display text-xs font-semibold text-slate-600 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+          <Activity size={12} /> Monitoring Overview
+        </h3>
+        <MonitoringOverviewCards summaries={fieldSummaries} />
+      </section>
+
+      {/* Operation Lifecycle */}
+      <section>
+        <h3 className="font-display text-xs font-semibold text-slate-600 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+          <TrendingUp size={12} /> Operation Lifecycle
+        </h3>
+        <LifecycleFlow steps={lifecycleSteps} />
+      </section>
+
+      {/* Observation quality */}
+      <section>
+        <h3 className="font-display text-xs font-semibold text-slate-600 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+          <Eye size={12} /> Observation Quality
+        </h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+          <InfoRow label="Persisted readings" value={String(stats.readingsCount)} />
+          <InfoRow label="Confirmed field values" value={String(stats.confirmedObservations)} />
+          <InfoRow label="Avg. OCR confidence" value={stats.avgConfidence != null ? `${stats.avgConfidence.toFixed(1)}%` : '—'} />
+          <InfoRow label="Source" value={stats.source ? stats.source[0].toUpperCase() + stats.source.slice(1) : '—'} />
+        </div>
+      </section>
+
+      {/* Alerts / critical events */}
+      <section>
+        <h3 className="font-display text-xs font-semibold text-slate-600 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+          <AlertTriangle size={12} /> Alerts &amp; Critical Events
+        </h3>
+        {loadingAlerts ? (
+          <p className="font-display text-xs text-slate-400">Loading alerts…</p>
+        ) : alerts.length === 0 ? (
+          <div className="flex items-center gap-2 p-3 rounded-lg bg-emerald-50 border border-emerald-100">
+            <CheckCircle2 size={13} className="text-emerald-500" />
+            <span className="font-display text-xs text-slate-600">No alerts recorded for this operation.</span>
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-3 mb-1">
+              {criticalAlerts.length > 0 && (
+                <span className="font-display text-[10px] font-bold px-2 py-0.5 rounded bg-red-50 border border-red-200 text-red-600">
+                  {criticalAlerts.length} critical
+                </span>
+              )}
+              {warningAlerts.length > 0 && (
+                <span className="font-display text-[10px] font-bold px-2 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-600">
+                  {warningAlerts.length} warning
+                </span>
+              )}
+              {infoAlerts.length > 0 && (
+                <span className="font-display text-[10px] font-bold px-2 py-0.5 rounded bg-blue-50 border border-blue-200 text-blue-600">
+                  {infoAlerts.length} informational
+                </span>
+              )}
+            </div>
+            {alerts.map((a) => (
+              <div key={a.id} className={cn(
+                'flex items-center gap-3 px-3 py-2 rounded-lg border',
+                a.severity === 'critical' ? 'bg-red-50 border-red-100' : a.severity === 'warning' ? 'bg-amber-50 border-amber-100' : 'bg-blue-50 border-blue-100',
+              )}>
+                <span className="font-mono text-[10px] text-slate-400 w-16 flex-shrink-0">{formatTime(a.timestamp)}</span>
+                <span className="font-display text-xs text-slate-700 flex-1">
+                  {a.message}
+                  {a.value != null && <span className="ml-1 font-mono text-slate-500">{a.value}{a.unit}</span>}
+                </span>
+                {a.acknowledged && <span className="font-display text-[9px] text-slate-400 uppercase tracking-wider">Acked</span>}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// ─── Trends tab ─────────────────────────────────────────────────────────────
+
+function fieldSeries(readings: VitalObservationRow[], field: VitalField) {
+  return readings.filter((r) => r[field] != null).map((r) => ({ timestamp: r.timestamp, value: r[field] as number }));
+}
+
+function EmptyChartState({ title, message }: { title: string; message: string }) {
+  return (
+    <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+      <span className="font-display text-xs font-semibold text-slate-500">{title}</span>
+      <p className="font-display text-[11px] text-slate-400 mt-2">{message}</p>
+    </div>
+  );
+}
+
+function MiniTrendChart({
+  title, unit, data, lines,
+}: {
+  title: string;
+  unit: string;
+  data: Array<Record<string, number | null>>;
+  lines: { key: string; color: string; label: string }[];
+}) {
+  if (data.length === 0) {
+    return <EmptyChartState title={title} message="No persisted observations available." />;
+  }
+  if (data.length === 1) {
+    return <EmptyChartState title={title} message={`Only 1 observation recorded — not enough points to chart a trend.`} />;
+  }
+
+  return (
+    <div className="rounded-xl border border-slate-200 p-3">
+      <div className="flex items-center justify-between mb-1">
+        <span className="font-display text-xs font-semibold text-slate-700">{title}</span>
+        {lines.length === 1 && <span className="font-mono text-[10px] text-slate-400">{unit}</span>}
+      </div>
+      <ResponsiveContainer width="100%" height={130}>
+        <RLineChart data={data} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
+          <XAxis dataKey="timestamp" type="number" domain={['dataMin', 'dataMax']}
+            tickFormatter={(v) => formatTimeShort(v)} tick={{ fontSize: 9, fill: '#94A3B8' }}
+            axisLine={{ stroke: '#E2E8F0' }} tickLine={false} />
+          <YAxis tick={{ fontSize: 9, fill: '#94A3B8' }} axisLine={false} tickLine={false} width={32} />
+          <Tooltip labelFormatter={(v) => formatTime(Number(v))} contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #E2E8F0' }} />
+          {lines.length > 1 && <Legend wrapperStyle={{ fontSize: 9 }} />}
+          {lines.map((l) => (
+            <Line key={l.key} dataKey={l.key} name={l.label} stroke={l.color} strokeWidth={1.75} dot={{ r: 2 }} connectNulls={false} isAnimationActive={false} />
+          ))}
+        </RLineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function RangeStrip({ summaries }: { summaries: FieldSummary[] }) {
+  const withData = summaries.filter((s) => s.count > 0);
+  if (withData.length === 0) {
+    return <p className="font-display text-xs text-slate-400">No persisted observations available.</p>;
+  }
+  return (
+    <div className="space-y-2.5">
+      {withData.map((s) => {
+        const span = (s.max! - s.min!) || 1;
+        const latestPct = Math.max(0, Math.min(100, ((s.last! - s.min!) / span) * 100));
+        return (
+          <div key={s.field} className="flex items-center gap-3">
+            <span className="w-24 font-display text-[11px] text-slate-500 flex-shrink-0 truncate">{s.label}</span>
+            <span className="font-mono text-[10px] text-slate-400 w-12 text-right flex-shrink-0">{s.min}</span>
+            <div className="flex-1 h-1.5 rounded-full bg-slate-100 relative min-w-[60px]">
+              <div className="absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full border-2 border-white shadow"
+                style={{ left: `calc(${latestPct}% - 5px)`, backgroundColor: VITAL_COLORS[FIELD_TO_VITAL_GROUP[s.field]] }}
+                title={`Latest: ${s.last} ${s.unit}`} />
+            </div>
+            <span className="font-mono text-[10px] text-slate-400 w-12 flex-shrink-0">{s.max}</span>
+            <span className="font-mono text-[11px] text-slate-700 font-semibold w-20 text-right flex-shrink-0">{s.last} {s.unit}</span>
+          </div>
         );
       })}
-    </>
+    </div>
+  );
+}
+
+function DistributionBars({ summaries }: { summaries: FieldSummary[] }) {
+  const byField = Object.fromEntries(summaries.map((s) => [s.field, s])) as Record<VitalField, FieldSummary>;
+  const groups: { key: VitalKey; label: string; count: number }[] = [
+    { key: 'hr',    label: 'Heart Rate', count: byField.hr.count },
+    { key: 'rr',    label: 'Resp Rate',  count: byField.rr.count },
+    { key: 'spo2',  label: 'SpO₂',       count: byField.spo2.count },
+    { key: 'etco2', label: 'EtCO₂',      count: byField.etco2.count },
+    { key: 'temp',  label: 'Temp',       count: byField.temp.count },
+    { key: 'nibp',  label: 'NIBP',       count: byField.nibpSystolic.count },
+  ];
+  const max = Math.max(1, ...groups.map((g) => g.count));
+  if (groups.every((g) => g.count === 0)) {
+    return <p className="font-display text-xs text-slate-400">No persisted observations available.</p>;
+  }
+  return (
+    <div className="space-y-1.5">
+      {groups.map((g) => (
+        <div key={g.key} className="flex items-center gap-2">
+          <span className="w-20 font-display text-[11px] text-slate-500 flex-shrink-0">{g.label}</span>
+          <div className="flex-1 h-3 rounded bg-slate-50 overflow-hidden">
+            <motion.div className="h-full rounded" style={{ backgroundColor: VITAL_COLORS[g.key] }}
+              initial={{ width: 0 }} animate={{ width: `${(g.count / max) * 100}%` }} transition={{ duration: 0.4 }} />
+          </div>
+          <span className="w-8 text-right font-mono text-[10px] text-slate-500 flex-shrink-0">{g.count}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TrendsTab({ readings }: { readings: VitalObservationRow[] }) {
+  const fieldSummaries = useMemo(() => computeFieldSummaries(readings), [readings]);
+
+  const nibpData = useMemo(
+    () => readings
+      .filter((r) => r.nibpSystolic != null || r.nibpDiastolic != null || r.nibpMean != null)
+      .map((r) => ({ timestamp: r.timestamp, nibpSystolic: r.nibpSystolic, nibpDiastolic: r.nibpDiastolic, nibpMean: r.nibpMean })),
+    [readings],
+  );
+
+  if (readings.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-slate-400 gap-2">
+        <TrendingUp size={28} className="opacity-30" />
+        <p className="font-display text-sm">No persisted observations available for trend analysis</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full overflow-y-auto p-5 space-y-6">
+      <section>
+        <h3 className="font-display text-xs font-semibold text-slate-600 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+          <TrendingUp size={12} /> Vital Trends
+        </h3>
+        <p className="font-display text-[11px] text-slate-400 mb-3">
+          Each line connects only genuinely confirmed camera observations — gaps in coverage are left as gaps, never filled in.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <MiniTrendChart title="Heart Rate" unit="bpm" data={fieldSeries(readings, 'hr').map((d) => ({ timestamp: d.timestamp, value: d.value }))}
+            lines={[{ key: 'value', color: VITAL_COLORS.hr, label: 'HR' }]} />
+          <MiniTrendChart title="SpO₂" unit="%" data={fieldSeries(readings, 'spo2')}
+            lines={[{ key: 'value', color: VITAL_COLORS.spo2, label: 'SpO₂' }]} />
+          <MiniTrendChart title="NIBP" unit="mmHg" data={nibpData}
+            lines={[
+              { key: 'nibpSystolic', color: VITAL_COLORS.nibp, label: 'Systolic' },
+              { key: 'nibpDiastolic', color: '#FF9B8A', label: 'Diastolic' },
+              { key: 'nibpMean', color: '#8A1F1B', label: 'Mean' },
+            ]} />
+          <MiniTrendChart title="EtCO₂" unit="mmHg" data={fieldSeries(readings, 'etco2')}
+            lines={[{ key: 'value', color: VITAL_COLORS.etco2, label: 'EtCO₂' }]} />
+          <MiniTrendChart title="Temp" unit="°C" data={fieldSeries(readings, 'temp')}
+            lines={[{ key: 'value', color: VITAL_COLORS.temp, label: 'Temp' }]} />
+          <MiniTrendChart title="Resp Rate" unit="/min" data={fieldSeries(readings, 'rr')}
+            lines={[{ key: 'value', color: VITAL_COLORS.rr, label: 'RR' }]} />
+        </div>
+      </section>
+
+      <section>
+        <h3 className="font-display text-xs font-semibold text-slate-600 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+          <Activity size={12} /> Min / Max Range Overview
+        </h3>
+        <div className="rounded-xl border border-slate-200 p-4">
+          <RangeStrip summaries={fieldSummaries} />
+        </div>
+      </section>
+
+      <section>
+        <h3 className="font-display text-xs font-semibold text-slate-600 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+          <LineChart size={12} /> Observation Distribution
+        </h3>
+        <div className="rounded-xl border border-slate-200 p-4">
+          <DistributionBars summaries={fieldSummaries} />
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -364,13 +774,14 @@ function QueueCard({ item, selected, onSelect }: {
 
 // ─── Reading Inspector ────────────────────────────────────────────────────────
 
-function ReadingInspector({ item, allItems, currentIndex, onNavigate, onCorrect, onDismiss }: {
+function ReadingInspector({ item, allItems, currentIndex, onNavigate, onCorrect, onDismiss, locked }: {
   item: FlaggedReading;
   allItems: FlaggedReading[];
   currentIndex: number;
   onNavigate: (dir: 1 | -1) => void;
   onCorrect: (id: string, value: string) => void;
   onDismiss: (id: string) => void;
+  locked: boolean;
 }) {
   const [editValue, setEditValue] = useState(item.suggestedValue);
   const cfg = VITAL_CFG[item.vital];
@@ -385,14 +796,14 @@ function ReadingInspector({ item, allItems, currentIndex, onNavigate, onCorrect,
           <span className="font-display text-xs font-semibold text-slate-700">Inspector</span>
         </div>
         <div className="flex items-center gap-1">
-          <button onClick={() => onNavigate(-1)} disabled={currentIndex === 0}
-            aria-label="Previous flagged reading"
+          <button onClick={() => onNavigate(-1)} disabled={currentIndex <= 0}
+            aria-label="Previous item"
             className="p-1 rounded text-slate-400 hover:text-slate-600 hover:bg-slate-100 disabled:opacity-30 disabled:pointer-events-none transition-colors">
             <ChevronLeft size={13} aria-hidden="true" />
           </button>
           <span className="font-mono text-[10px] text-slate-400 tabular-nums" aria-live="polite" aria-atomic="true">{currentIndex + 1} / {allItems.length}</span>
-          <button onClick={() => onNavigate(1)} disabled={currentIndex === allItems.length - 1}
-            aria-label="Next flagged reading"
+          <button onClick={() => onNavigate(1)} disabled={currentIndex === -1 || currentIndex === allItems.length - 1}
+            aria-label="Next item"
             className="p-1 rounded text-slate-400 hover:text-slate-600 hover:bg-slate-100 disabled:opacity-30 disabled:pointer-events-none transition-colors">
             <ChevronRight size={13} aria-hidden="true" />
           </button>
@@ -418,7 +829,7 @@ function ReadingInspector({ item, allItems, currentIndex, onNavigate, onCorrect,
         </div>
 
         {/* Correction field */}
-        {!resolved && (
+        {!resolved && !locked && (
           <div>
             <label htmlFor="reading-correction-input" className="font-display text-[10px] text-slate-500 uppercase tracking-wider block mb-1.5">
               Correct to ({item.unit})
@@ -444,6 +855,11 @@ function ReadingInspector({ item, allItems, currentIndex, onNavigate, onCorrect,
                 : 'Dismissed as correct'}
             </span>
           </div>
+        ) : locked ? (
+          <div className="flex items-center gap-2 p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+            <Lock size={13} className="text-slate-400 flex-shrink-0" />
+            <span className="font-display text-xs text-slate-500">Session signed &amp; locked — no further corrections</span>
+          </div>
         ) : (
           <div className="flex gap-2">
             <Button variant="success" size="sm" icon={<Check size={12} />} className="flex-1"
@@ -461,251 +877,24 @@ function ReadingInspector({ item, allItems, currentIndex, onNavigate, onCorrect,
   );
 }
 
-// ─── Frame Viewer ─────────────────────────────────────────────────────────────
+// ─── Sign Off Dialog ──────────────────────────────────────────────────────────
 
-function FrameViewer({ selectedVital, flaggedItems }: {
-  selectedVital?: VitalKey;
-  flaggedItems: FlaggedReading[];
-}) {
-  const [showOCR, setShowOCR] = useState(true);
-  const [zoom, setZoom] = useState(1);
-
-  return (
-    <div className="flex flex-col h-full">
-      {/* Toolbar */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-slate-200 bg-white flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <Camera size={13} className="text-slate-400" />
-          <span className="font-display text-xs font-medium text-slate-700">Captured Frame</span>
-          <span className="font-mono text-[10px] px-2 py-0.5 rounded"
-            style={{ background: 'rgba(50,173,230,0.08)', color: '#32ADE6', border: '1px solid rgba(50,173,230,0.2)' }}>
-            Frame 0241 · T+20:00
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => setShowOCR(v => !v)}
-            className={cn(
-              'flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-display text-[11px] border transition-colors',
-              showOCR ? 'bg-blue-50 text-blue-600 border-blue-200' : 'bg-slate-100 text-slate-500 border-slate-200',
-            )}>
-            <Eye size={11} /> OCR Overlay
-          </button>
-          <div className="flex items-center border border-slate-200 rounded-lg overflow-hidden" role="group" aria-label="Zoom controls">
-            <button onClick={() => setZoom(z => Math.max(0.55, +(z - 0.1).toFixed(1)))}
-              aria-label="Zoom out"
-              className="px-2 py-1.5 hover:bg-slate-100 text-slate-500 transition-colors"><ZoomOut size={12} aria-hidden="true" /></button>
-            <span className="font-mono text-[10px] text-slate-500 px-1.5 tabular-nums" aria-live="polite" aria-atomic="true" aria-label={`Zoom level ${Math.round(zoom * 100)}%`}>{Math.round(zoom * 100)}%</span>
-            <button onClick={() => setZoom(z => Math.min(1.8, +(z + 0.1).toFixed(1)))}
-              aria-label="Zoom in"
-              className="px-2 py-1.5 hover:bg-slate-100 text-slate-500 transition-colors"><ZoomIn size={12} aria-hidden="true" /></button>
-          </div>
-        </div>
-      </div>
-
-      {/* SVG frame */}
-      <div className="flex-1 overflow-auto p-6 bg-slate-100 flex items-start justify-center">
-        <svg
-          viewBox="0 0 500 300"
-          width={500 * zoom}
-          height={300 * zoom}
-          style={{ display: 'block', filter: 'drop-shadow(0 8px 40px rgba(0,0,0,0.35))', flexShrink: 0 }}
-        >
-          <MonitorContent
-            highlightVital={selectedVital}
-            showOCR={showOCR}
-            flaggedItems={flaggedItems.filter(i => i.status === 'pending')}
-          />
-        </svg>
-      </div>
-
-      {/* OCR confidence legend */}
-      {showOCR && (
-        <div className="px-4 py-2 border-t border-slate-200 bg-white flex items-center gap-4 flex-shrink-0">
-          <span className="font-display text-[10px] text-slate-500 uppercase tracking-wider">OCR confidence:</span>
-          {([['≥80%', '#30D158'], ['65–79%', '#FFD600'], ['<65%', '#FF3B30']] as const).map(([lbl, col]) => (
-            <div key={lbl} className="flex items-center gap-1.5">
-              <div className="w-4 h-0.5 rounded-full" style={{ background: col }} />
-              <span className="font-mono text-[10px] text-slate-500">{lbl}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Audit Trail ─────────────────────────────────────────────────────────────
-
-function AuditTrail({ entries }: { entries: AuditEntry[] }) {
-  const initialIdsRef = useRef<Set<string>>(new Set(entries.map(e => e.id)));
-
-  if (entries.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full text-slate-400 gap-2">
-        <FileText size={28} className="opacity-30" />
-        <p className="font-display text-sm">No audit entries yet</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="h-full overflow-y-auto p-5">
-      <p className="font-display text-[10px] text-slate-500 uppercase tracking-wider mb-4">Chain of Custody · All actions logged</p>
-      <div className="space-y-0">
-        {entries.map((entry, i) => {
-          const cfg = VITAL_CFG[entry.vital];
-          const isHuman = entry.action !== 'ai_detect';
-          const ac = entry.action === 'human_correct' ? '#30D158' : entry.action === 'human_dismiss' ? '#94A3B8' : '#32ADE6';
-          const aLabel = entry.action === 'ai_detect' ? 'AI Detected' : entry.action === 'human_correct' ? 'Corrected' : 'Dismissed';
-          const isNew = !initialIdsRef.current.has(entry.id);
-
-          return (
-            <motion.div key={entry.id}
-              initial={isNew ? { opacity: 0, y: 6 } : false}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: isNew ? 0 : i * 0.05, duration: 0.2 }} className="flex gap-3">
-              <div className="flex flex-col items-center">
-                <div className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0"
-                  style={{ background: `${ac}18`, border: `1px solid ${ac}40` }}>
-                  {isHuman
-                    ? <Edit3 size={11} style={{ color: ac }} />
-                    : <Camera size={11} style={{ color: ac }} />}
-                </div>
-                {i < entries.length - 1 && <div className="w-px flex-1 mt-1 mb-1 bg-slate-200" />}
-              </div>
-              <div className={cn('flex-1', i < entries.length - 1 ? 'pb-4' : 'pb-0')}>
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-display text-xs font-semibold text-slate-700">{aLabel}</span>
-                    <span className="font-display text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded"
-                      style={{ background: `${cfg.color}15`, color: cfg.color, border: `1px solid ${cfg.color}30` }}>
-                      {cfg.label}
-                    </span>
-                  </div>
-                  <span className="font-mono text-[10px] text-slate-400 tabular-nums">{formatTimeShort(entry.timestamp)}</span>
-                </div>
-                <div className="mt-1 flex items-center gap-2 flex-wrap">
-                  {entry.prevValue && (
-                    <>
-                      <span className="font-mono text-xs text-slate-400 line-through">{entry.prevValue}</span>
-                      <ArrowRight size={10} className="text-slate-300" />
-                    </>
-                  )}
-                  <span className="font-mono text-xs font-semibold" style={{ color: ac }}>{entry.value}</span>
-                  {entry.confidence !== undefined && <ConfidencePill value={entry.confidence} />}
-                </div>
-                <p className="font-display text-[10px] text-slate-400 mt-0.5">
-                  {entry.author} · {isHuman ? 'Manual review' : `Conf. ${entry.confidence}%`}
-                </p>
-              </div>
-            </motion.div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ─── Event Marker Editor ──────────────────────────────────────────────────────
-
-const EVT_COLORS = {
-  drug:        { bg: '#EFF6FF', border: '#BFDBFE', text: '#3B82F6' },
-  event:       { bg: '#F0FDF4', border: '#BBF7D0', text: '#16A34A' },
-  observation: { bg: '#FFF7ED', border: '#FED7AA', text: '#EA580C' },
-};
-
-function EventMarkerEditor({ events, onAdd, onRemove }: {
-  events: EventMarker[];
-  onAdd: (m: Omit<EventMarker, 'id'>) => void;
-  onRemove: (id: string) => void;
-}) {
-  const [customText, setCustomText] = useState('');
-
-  const addCustom = () => {
-    if (!customText.trim()) return;
-    onAdd({ timestamp: Date.now(), label: customText.trim(), category: 'observation' });
-    setCustomText('');
-  };
-
-  return (
-    <div className="flex flex-col h-full">
-      <div className="p-4 border-b border-slate-200 space-y-3 flex-shrink-0 bg-white">
-        <p className="font-display text-[10px] text-slate-500 uppercase tracking-wider">Quick Event Markers</p>
-        <div className="flex flex-wrap gap-2">
-          {QUICK_EVENTS.map(({ label, icon: Icon, category }) => (
-            <button key={label}
-              onClick={() => onAdd({ timestamp: Date.now(), label, category })}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg font-display text-xs transition-all hover:scale-105 active:scale-95 border"
-              style={{ ...EVT_COLORS[category], borderColor: EVT_COLORS[category].border }}>
-              <Icon size={11} />
-              {label.startsWith('Drug:') ? label.slice(6) : label}
-            </button>
-          ))}
-        </div>
-        <div className="flex gap-2">
-          <input type="text" value={customText} onChange={e => setCustomText(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && addCustom()}
-            aria-label="Custom observation text"
-            placeholder="Add custom observation..."
-            className="flex-1 h-8 px-3 rounded-lg border border-slate-200 bg-white font-display text-xs text-slate-700 placeholder-slate-400 focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100 transition-all" />
-          <Button variant="outline" size="sm" icon={<Plus size={12} />} onClick={addCustom}
-            className="border-slate-200 text-slate-600">Add</Button>
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto p-4">
-        <p className="font-display text-[10px] text-slate-500 uppercase tracking-wider mb-3">Recorded Events</p>
-        <AnimatePresence>
-          {events.length === 0 ? (
-            <div className="text-center py-8 text-slate-400">
-              <Clock size={22} className="mx-auto mb-2 opacity-30" />
-              <p className="font-display text-xs">No events recorded</p>
-            </div>
-          ) : (
-            [...events].sort((a, b) => a.timestamp - b.timestamp).map(evt => {
-              const cols = EVT_COLORS[evt.category];
-              return (
-                <motion.div key={evt.id} layout initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: 8, height: 0, marginBottom: 0 }}
-                  transition={{ duration: 0.18 }}
-                  className="flex items-center justify-between py-2 border-b border-slate-100 last:border-0">
-                  <div className="flex items-center gap-2.5">
-                    <span className="font-mono text-[10px] text-slate-400 tabular-nums">{formatTimeShort(evt.timestamp)}</span>
-                    <span className="font-display text-xs px-2 py-0.5 rounded border"
-                      style={{ background: cols.bg, borderColor: cols.border, color: cols.text }}>
-                      {evt.label}
-                    </span>
-                  </div>
-                  <button onClick={() => onRemove(evt.id)}
-                    aria-label={`Remove event: ${evt.label}`}
-                    className="p-1 rounded text-slate-300 hover:text-red-400 hover:bg-red-50 transition-colors">
-                    <X size={11} aria-hidden="true" />
-                  </button>
-                </motion.div>
-              );
-            })
-          )}
-        </AnimatePresence>
-      </div>
-    </div>
-  );
-}
-
-// ─── Sign Dialog ──────────────────────────────────────────────────────────────
-
-function SignDialog({ open, onClose, onConfirm, session }: {
+function SignDialog({ open, onClose, onConfirm, session, criticalTotal, informationalCount, signing }: {
   open: boolean; onClose: () => void; onConfirm: () => void;
-  session: { patient: { id: string; asa?: number }; procedure: string; anesthetist: string; startTime: number } | null;
+  session: Session | null;
+  criticalTotal: number;
+  informationalCount: number;
+  signing: boolean;
 }) {
   return (
-    <Dialog open={open} onClose={onClose} title="Sign & Lock Anaesthesia Record"
+    <Dialog open={open} onClose={onClose} title="Sign Off Operation"
       description="This action is irreversible. Review the record carefully before proceeding."
       size="md" closeOnBackdrop={false}
       footer={
         <>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button variant="clinical" icon={<Lock size={13} />} onClick={onConfirm}>
-            Sign & Lock Record
+          <Button variant="ghost" onClick={onClose} disabled={signing}>Cancel</Button>
+          <Button variant="clinical" icon={<Lock size={13} />} onClick={onConfirm} loading={signing}>
+            Sign Off Operation
           </Button>
         </>
       }>
@@ -716,9 +905,9 @@ function SignDialog({ open, onClose, onConfirm, session }: {
           <div>
             <p className="font-display text-sm font-semibold text-[#E8F1FF]">Legal Document Warning</p>
             <p className="font-display text-xs leading-relaxed mt-0.5" style={{ color: '#7A90AA' }}>
-              By signing, you certify this anaesthesia record is accurate and complete.
+              By signing off, you certify this anaesthesia record is accurate and complete.
               The record will be locked and become a binding legal medical document.
-              All AI-flagged readings have been reviewed and corrected where necessary.
+              All blocking exceptions have been reviewed and resolved.
             </p>
           </div>
         </div>
@@ -740,11 +929,20 @@ function SignDialog({ open, onClose, onConfirm, session }: {
 
         <div className="flex items-center gap-2.5 p-2.5 rounded-xl"
           style={{ background: 'rgba(48,209,88,0.08)', border: '1px solid rgba(48,209,88,0.25)' }}>
-          <ShieldCheck size={14} style={{ color: '#30D158' }} />
+          <CheckCircle2 size={14} style={{ color: '#30D158' }} />
           <p className="font-display text-xs" style={{ color: '#30D158' }}>
-            All 4 flagged readings reviewed and resolved — chain of custody verified
+            {criticalTotal > 0
+              ? `All ${criticalTotal} blocking exception${criticalTotal === 1 ? '' : 's'} reviewed and resolved — chain of custody verified`
+              : 'No blocking exceptions on this session — chain of custody verified'}
           </p>
         </div>
+
+        {informationalCount > 0 && (
+          <p className="font-display text-[11px] leading-relaxed" style={{ color: '#7A90AA' }}>
+            {informationalCount} informational low-/medium-confidence OCR event{informationalCount === 1 ? '' : 's'} were logged and
+            did not require review — autonomous monitoring accepted these values within tolerance.
+          </p>
+        )}
       </div>
     </Dialog>
   );
@@ -752,13 +950,45 @@ function SignDialog({ open, onClose, onConfirm, session }: {
 
 // ─── PDF Progress Dialog ──────────────────────────────────────────────────────
 
-function PdfDialog({ signState, pdfProgress, onClose }: {
-  signState: SignState; pdfProgress: number; onClose: () => void;
+function PdfDialog({ signState, onClose, sessionId, onGoArchive, session }: {
+  signState: SignState; onClose: () => void; sessionId: string | null; onGoArchive: () => void; session: Session | null;
 }) {
-  const label =
-    pdfProgress < 25 ? 'Encrypting session data…' :
-    pdfProgress < 55 ? 'Rendering anaesthesia charts…' :
-    pdfProgress < 80 ? 'Applying digital signature…' : 'Finalising document…';
+  const { toast } = useToast();
+
+  const handleDownload = () => {
+    if (!sessionId) return;
+    // The real PDF that api.signSession()'s backend call just wrote to
+    // disk — no Content-Disposition header on the backend, so this opens
+    // it inline in a new tab rather than forcing a save-as, which is fine:
+    // it's the real document either way, not a placeholder.
+    window.open(api.reportPdfUrl(sessionId), '_blank', 'noopener');
+  };
+
+  const handlePrint = async () => {
+    if (!sessionId) return;
+    try {
+      const res = await fetch(api.reportPdfUrl(sessionId));
+      if (!res.ok) throw new Error(`report.pdf failed: ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const iframe = document.createElement('iframe');
+      iframe.style.position = 'fixed';
+      iframe.style.width = '0';
+      iframe.style.height = '0';
+      iframe.style.border = 'none';
+      iframe.src = url;
+      iframe.onload = () => {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+      };
+      document.body.appendChild(iframe);
+    } catch (err) {
+      console.error('Failed to print report', err);
+      toast.error('Could not print', {
+        description: "Couldn't reach the backend — check it's running and try again.",
+      });
+    }
+  };
 
   return (
     <Dialog open={signState === 'signing' || signState === 'locked'} onClose={onClose}
@@ -766,16 +996,21 @@ function PdfDialog({ signState, pdfProgress, onClose }: {
       <div className="py-4 flex flex-col items-center gap-4">
         <AnimatePresence mode="wait">
           {signState === 'signing' ? (
+            // Real awaited POST /sign, not a fabricated progress bar — there's
+            // no meaningful percentage for a single request/response, so this
+            // shows an indeterminate spinner for however long it actually takes.
             <motion.div key="signing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               className="w-full flex flex-col items-center gap-4">
-              <CircularProgress value={pdfProgress} size={76} strokeWidth={5} color="#30D158"
-                trackColor="rgba(24,43,66,0.8)"
-                label={<span className="font-mono text-sm font-bold" style={{ color: '#30D158' }}>{Math.round(pdfProgress)}%</span>} />
+              <motion.div
+                className="w-16 h-16 rounded-full flex items-center justify-center"
+                style={{ background: 'rgba(48,209,88,0.1)', border: '2px solid rgba(48,209,88,0.4)' }}
+                animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1.1, ease: 'linear' }}>
+                <Lock size={24} style={{ color: '#30D158' }} />
+              </motion.div>
               <div className="text-center">
-                <p className="font-display font-semibold text-[#E8F1FF]">Generating PDF Record</p>
-                <p className="font-display text-xs mt-1" style={{ color: '#7A90AA' }}>{label}</p>
+                <p className="font-display font-semibold text-[#E8F1FF]">Signing off & generating PDF…</p>
+                <p className="font-display text-xs mt-1" style={{ color: '#7A90AA' }}>Calling the backend — this is a real request</p>
               </div>
-              <ProgressBar value={pdfProgress} color="#30D158" size="sm" trackColor="rgba(24,43,66,1)" className="w-full" />
             </motion.div>
           ) : (
             <motion.div key="locked" initial={{ opacity: 0 }} animate={{ opacity: 1 }}
@@ -789,14 +1024,19 @@ function PdfDialog({ signState, pdfProgress, onClose }: {
                 <Lock size={28} style={{ color: '#30D158' }} />
               </motion.div>
               <div className="text-center">
-                <p className="font-display font-semibold text-[#E8F1FF]">Record Signed & Locked</p>
+                <p className="font-display font-semibold text-[#E8F1FF]">Operation Signed &amp; Locked</p>
                 <p className="font-display text-xs mt-1" style={{ color: '#7A90AA' }}>
-                  Anaesthesia PDF generated and sealed
+                  Signed by {session?.signedBy ?? session?.anesthetist ?? '—'}
+                  {session?.signedAt != null ? ` · ${formatTime(session.signedAt)}` : ''}
+                </p>
+                <p className="font-display text-xs mt-1" style={{ color: '#7A90AA' }}>
+                  Anaesthesia PDF generated and sealed — this case now lives in Archive
                 </p>
               </div>
-              <div className="flex gap-2">
-                <Button variant="success" size="sm" icon={<Download size={13} />}>Download PDF</Button>
-                <Button variant="ghost" size="sm" onClick={onClose}>Close</Button>
+              <div className="flex gap-2 flex-wrap justify-center">
+                <Button variant="success" size="sm" icon={<Download size={13} />} onClick={handleDownload}>Download PDF</Button>
+                <Button variant="outline" size="sm" icon={<Printer size={13} />} onClick={handlePrint}>Print</Button>
+                <Button variant="clinical" size="sm" icon={<ArrowRight size={13} />} onClick={onGoArchive}>Go to Archive</Button>
               </div>
             </motion.div>
           )}
@@ -806,111 +1046,389 @@ function PdfDialog({ signState, pdfProgress, onClose }: {
   );
 }
 
+// ─── Empty / guard states ──────────────────────────────────────────────────────
+
+function ReviewEmptyState({ icon: Icon, title, description, actions }: {
+  icon: React.ElementType; title: string; description: string; actions?: React.ReactNode;
+}) {
+  return (
+    <div className="h-full flex flex-col items-center justify-center gap-3 text-center px-6">
+      <Icon size={32} className="text-slate-300" />
+      <div>
+        <p className="font-display text-sm font-semibold text-slate-600">{title}</p>
+        <p className="font-display text-xs text-slate-400 mt-1 max-w-sm">{description}</p>
+      </div>
+      {actions && <div className="flex gap-2 mt-2">{actions}</div>}
+    </div>
+  );
+}
+
 // ─── Review Page ──────────────────────────────────────────────────────────────
 
 export function ReviewPage() {
-  const { activeSession, archivedSessions } = useSessionStore();
-  const session = activeSession ?? archivedSessions[0] ?? null;
+  const params = useParams<{ sessionId?: string }>();
+  const navigate = useNavigate();
+  const { toast } = useToast();
+  const lastEndedSessionId = useSessionStore((s) => s.lastEndedSessionId);
+  const storeActiveSession = useSessionStore((s) => s.activeSession);
 
-  const [flaggedItems, setFlaggedItems] = useState<FlaggedReading[]>(INITIAL_FLAGGED);
-  const [auditEntries, setAuditEntries]   = useState<AuditEntry[]>(INITIAL_AUDIT);
-  const [eventMarkers, setEventMarkers]   = useState<EventMarker[]>(INITIAL_EVENTS);
-  const [selectedId, setSelectedId]       = useState<string>(INITIAL_FLAGGED[0].id);
-  const [activeTab, setActiveTab]         = useState<TabId>('frame');
-  const [signState, setSignState]         = useState<SignState>('idle');
-  const [pdfProgress, setPdfProgress]     = useState(0);
+  // M5.8.1: Review represents a COMPLETED operation and must load it fresh
+  // from the backend by id -- never from transient React/zustand state.
+  // A URL param (End Operation's own navigation, Archive's "Continue to
+  // Review") always wins; the bare /review nav link falls back to the last
+  // session this browser tab actually ended, which survives a reload
+  // because sessionStore persists it (see its own docstring).
+  const sessionId = params.sessionId ?? lastEndedSessionId ?? null;
 
-  const selectedItem  = flaggedItems.find(i => i.id === selectedId) ?? flaggedItems[0];
-  const selectedIndex = flaggedItems.findIndex(i => i.id === selectedId);
-  const pendingItems  = flaggedItems.filter(i => i.status === 'pending');
-  const allResolved   = pendingItems.length === 0;
-  const resolvedCount = flaggedItems.filter(i => i.status !== 'pending').length;
-
-  const signIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const signTimeoutRef  = useRef<ReturnType<typeof setTimeout>  | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [sessionLoading, setSessionLoading] = useState(true);
+  const [sessionError, setSessionError] = useState<'not_found' | 'unreachable' | null>(null);
 
   useEffect(() => {
-    return () => {
-      if (signIntervalRef.current) clearInterval(signIntervalRef.current);
-      if (signTimeoutRef.current)  clearTimeout(signTimeoutRef.current);
+    if (!sessionId) {
+      setSession(null);
+      setSessionLoading(false);
+      setSessionError(null);
+      return;
+    }
+    let cancelled = false;
+    setSessionLoading(true);
+    setSessionError(null);
+
+    // End Operation navigates here the instant its POST /end fires, without
+    // waiting for that request to resolve (same optimistic pattern
+    // sessionStore.endSession uses elsewhere). A GET landing in that short
+    // window could still see status='active' on the backend. A few short
+    // retries absorb that race without masking a GENUINELY still-active
+    // session for more than about a second -- the graceful "still in
+    // progress" state below is still reached for that case, just not on a
+    // false positive caused by request ordering.
+    const fetchWithRetry = async () => {
+      try {
+        let s: Session = await api.getSession(sessionId);
+        for (let attempt = 0; attempt < 4 && s.status !== 'completed' && !cancelled; attempt++) {
+          await new Promise((r) => setTimeout(r, 350));
+          if (cancelled) return;
+          s = await api.getSession(sessionId);
+        }
+        if (!cancelled) setSession(s);
+      } catch (err) {
+        console.error('Failed to load session for review', err);
+        if (cancelled) return;
+        setSession(null);
+        setSessionError(err instanceof Error && err.message.includes('404') ? 'not_found' : 'unreachable');
+      } finally {
+        if (!cancelled) setSessionLoading(false);
+      }
     };
-  }, []);
+    void fetchWithRetry();
 
-  const handleCorrect = useCallback((id: string, correctedValue: string) => {
-    setFlaggedItems(prev => {
-      const item = prev.find(i => i.id === id)!;
-      setAuditEntries(ae => [...ae, {
-        id: `AUD-${Date.now()}`, timestamp: Date.now(), action: 'human_correct',
-        vital: item.vital, value: correctedValue, prevValue: item.aiValue,
-        author: session?.anesthetist ?? 'Anaesthetist', confidence: item.confidence,
-      }]);
-      const next = prev.find(i => i.status === 'pending' && i.id !== id);
-      if (next) setSelectedId(next.id);
-      return prev.map(i => i.id === id ? { ...i, status: 'corrected', correctedValue } : i);
-    });
-  }, [session?.anesthetist]);
+    return () => { cancelled = true; };
+  }, [sessionId]);
 
-  const handleDismiss = useCallback((id: string) => {
-    setFlaggedItems(prev => {
-      const item = prev.find(i => i.id === id)!;
-      setAuditEntries(ae => [...ae, {
-        id: `AUD-${Date.now()}`, timestamp: Date.now(), action: 'human_dismiss',
-        vital: item.vital, value: item.aiValue,
-        author: session?.anesthetist ?? 'Anaesthetist', confidence: item.confidence,
-      }]);
-      const next = prev.find(i => i.status === 'pending' && i.id !== id);
-      if (next) setSelectedId(next.id);
-      return prev.map(i => i.id === id ? { ...i, status: 'dismissed' } : i);
-    });
-  }, [session?.anesthetist]);
+  const [flaggedItems, setFlaggedItems]   = useState<FlaggedReading[]>([]);
+  const [category, setCategory]           = useState<ExceptionCategory>('critical');
+  const [selectedId, setSelectedId]       = useState<string>('');
+  const [activeTab, setActiveTab]         = useState<TabId>('overview');
+  const [signState, setSignState]         = useState<SignState>('idle');
+  const [signing, setSigning]             = useState(false);
+  const [loadingFlagged, setLoadingFlagged] = useState(true);
+  const [readings, setReadings]           = useState<VitalObservationRow[]>([]);
+  const [loadingReadings, setLoadingReadings] = useState(true);
+  const [alerts, setAlerts]               = useState<AlertDto[]>([]);
+  const [loadingAlerts, setLoadingAlerts] = useState(true);
+
+  const timelineEvents = useMemo(
+    () => (session ? buildCaseEvents(session, readings, alerts) : []),
+    [session, readings, alerts]
+  );
+
+  // Fetch the real flagged list whenever the resolved session changes.
+  useEffect(() => {
+    if (!session?.id) {
+      setFlaggedItems([]);
+      setSelectedId('');
+      setLoadingFlagged(false);
+      return;
+    }
+    let cancelled = false;
+    setLoadingFlagged(true);
+    api.getFlagged(session.id)
+      .then((flagged) => {
+        if (cancelled) return;
+        setFlaggedItems(flagged);
+      })
+      .catch((err) => {
+        console.error('Failed to load review data', err);
+        if (!cancelled) {
+          toast.error('Could not load flagged readings', {
+            description: "Couldn't reach the backend — check it's running and try again.",
+          });
+        }
+      })
+      .finally(() => { if (!cancelled) setLoadingFlagged(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id]);
+
+  // The real persisted vitals timeline, same endpoint the Active Operation
+  // workspace's ledger hydrates from — works for a completed session too.
+  useEffect(() => {
+    if (!session?.id) {
+      setReadings([]);
+      setLoadingReadings(false);
+      return;
+    }
+    let cancelled = false;
+    setLoadingReadings(true);
+    api.getReadings(session.id)
+      .then((rows) => { if (!cancelled) setReadings(rows); })
+      .catch((err) => {
+        console.error('Failed to load vitals timeline', err);
+        if (!cancelled) {
+          toast.error('Could not load the observation ledger', {
+            description: "Couldn't reach the backend — check it's running and try again.",
+          });
+        }
+      })
+      .finally(() => { if (!cancelled) setLoadingReadings(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id]);
+
+  // Real, backend-evaluated alert history for this session.
+  useEffect(() => {
+    if (!session?.id) {
+      setAlerts([]);
+      setLoadingAlerts(false);
+      return;
+    }
+    let cancelled = false;
+    setLoadingAlerts(true);
+    api.getAlerts(session.id)
+      .then((rows) => { if (!cancelled) setAlerts(rows); })
+      .catch((err) => {
+        console.error('Failed to load alerts', err);
+        if (!cancelled) setAlerts([]);
+      })
+      .finally(() => { if (!cancelled) setLoadingAlerts(false); });
+    return () => { cancelled = true; };
+  }, [session?.id]);
+
+  const categorized = useMemo(() => categorize(flaggedItems), [flaggedItems]);
+  const categoryCounts = useMemo(() => ({
+    critical: categorized.critical.length,
+    lowConfidence: categorized.lowConfidence.length,
+    corrected: categorized.corrected.length,
+    resolved: categorized.resolved.length,
+  }), [categorized]);
+  const visibleItems = categorized[category];
+
+  // Pick a sensible default category the first time this session's flagged
+  // items finish loading -- prioritising whichever bucket actually needs
+  // attention -- without overriding a category the clinician has since
+  // clicked into as items get corrected/dismissed during the session.
+  useEffect(() => {
+    if (loadingFlagged) return;
+    if (categorized.critical.length > 0) setCategory('critical');
+    else if (categorized.lowConfidence.length > 0) setCategory('lowConfidence');
+    else if (categorized.corrected.length > 0) setCategory('corrected');
+    else setCategory('resolved');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadingFlagged, session?.id]);
+
+  // Keep selection valid whenever the category or its contents change.
+  useEffect(() => {
+    if (visibleItems.length === 0) {
+      if (selectedId !== '') setSelectedId('');
+      return;
+    }
+    if (!visibleItems.some((i) => i.id === selectedId)) setSelectedId(visibleItems[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [category, visibleItems]);
+
+  const selectedItem  = visibleItems.find(i => i.id === selectedId) ?? visibleItems[0];
+  const selectedIndex = visibleItems.findIndex(i => i.id === selectedId);
+
+  const isCompleted = session?.status === 'completed';
+  const isSigned    = session?.signedAt != null;
+
+  const criticalTotal = flaggedItems.filter((i) => i.severity === 'critical').length;
+  const criticalPendingCount = categoryCounts.critical;
+  const criticalResolvedCount = criticalTotal - criticalPendingCount;
+  const criticalPct = criticalTotal > 0 ? (criticalResolvedCount / criticalTotal) * 100 : 100;
+  const readyToSign = criticalPendingCount === 0;
+  const informationalCount = categoryCounts.lowConfidence + categoryCounts.corrected + categoryCounts.resolved;
+
+  const handleCorrect = useCallback(async (id: string, correctedValue: string) => {
+    const item = flaggedItems.find(i => i.id === id);
+    if (!item) return;
+
+    setFlaggedItems(prev => prev.map(i => i.id === id ? { ...i, status: 'corrected', correctedValue } : i));
+
+    try {
+      await api.correctFlagged(id, correctedValue, session?.anesthetist);
+    } catch (err) {
+      console.error('Failed to save correction', err);
+      toast.error('Correction not saved', {
+        description: "Couldn't reach the backend — check it's running and try again.",
+      });
+      setFlaggedItems(prev => prev.map(i => i.id === id ? { ...i, status: 'pending', correctedValue: undefined } : i));
+    }
+  }, [flaggedItems, session?.anesthetist, toast]);
+
+  const handleDismiss = useCallback(async (id: string) => {
+    const item = flaggedItems.find(i => i.id === id);
+    if (!item) return;
+
+    setFlaggedItems(prev => prev.map(i => i.id === id ? { ...i, status: 'dismissed' } : i));
+
+    try {
+      await api.dismissFlagged(id, session?.anesthetist);
+    } catch (err) {
+      console.error('Failed to save dismissal', err);
+      toast.error('Dismissal not saved', {
+        description: "Couldn't reach the backend — check it's running and try again.",
+      });
+      setFlaggedItems(prev => prev.map(i => i.id === id ? { ...i, status: 'pending' } : i));
+    }
+  }, [flaggedItems, session?.anesthetist, toast]);
 
   const handleNavigate = useCallback((dir: 1 | -1) => {
-    setFlaggedItems(prev => {
-      const idx = Math.max(0, Math.min(prev.length - 1, prev.findIndex(i => i.id === selectedId) + dir));
-      setSelectedId(prev[idx].id);
-      return prev;
-    });
-  }, [selectedId]);
+    const idx = Math.max(0, Math.min(visibleItems.length - 1, selectedIndex + dir));
+    if (visibleItems[idx]) setSelectedId(visibleItems[idx].id);
+  }, [visibleItems, selectedIndex]);
 
-  const handleSignConfirm = useCallback(() => {
+  const handleSignConfirm = useCallback(async () => {
+    if (!session?.id) return;
+    setSigning(true);
     setSignState('signing');
-    setPdfProgress(0);
-    let p = 0;
-    signIntervalRef.current = setInterval(() => {
-      p += Math.random() * 9 + 4;
-      if (p >= 100) {
-        setPdfProgress(100);
-        clearInterval(signIntervalRef.current!);
-        signIntervalRef.current = null;
-        signTimeoutRef.current = setTimeout(() => setSignState('locked'), 350);
-      } else {
-        setPdfProgress(p);
-      }
-    }, 110);
-  }, []);
+    try {
+      const signed = await api.signSession(session.id, session.anesthetist, 'typed');
+      setSession(signed);
+      setSignState('locked');
+    } catch (err) {
+      console.error('Failed to sign session', err);
+      const message = err instanceof Error ? err.message : '';
+      toast.error('Could not sign off', {
+        description: message.includes('409')
+          ? 'The session must be ended before it can be signed off — use "End Operation" first.'
+          : "Couldn't reach the backend — check it's running and try again.",
+      });
+      setSignState('idle');
+    } finally {
+      setSigning(false);
+    }
+  }, [session, toast]);
+
+  // ── Guard states ────────────────────────────────────────────────────────
+
+  if (!sessionId) {
+    return (
+      <div className="h-full" style={{ background: '#F8FAFC' }}>
+        <ReviewEmptyState
+          icon={ClipboardList}
+          title="No completed operation to review yet"
+          description="Review & Sign-off shows a case once it has been ended. End the active operation, or open a previously recorded one from Archive."
+          actions={
+            <>
+              {storeActiveSession && (
+                <Button variant="primary" size="sm" onClick={() => navigate('/operation')}>Go to Active Operation</Button>
+              )}
+              <Button variant="outline" size="sm" onClick={() => navigate('/archive')}>Open Archive</Button>
+            </>
+          }
+        />
+      </div>
+    );
+  }
+
+  if (sessionLoading) {
+    return (
+      <div className="h-full flex items-center justify-center" style={{ background: '#F8FAFC' }}>
+        <p className="font-display text-sm text-slate-400">Loading operation record…</p>
+      </div>
+    );
+  }
+
+  if (sessionError || !session) {
+    return (
+      <div className="h-full" style={{ background: '#F8FAFC' }}>
+        <ReviewEmptyState
+          icon={AlertTriangle}
+          title={sessionError === 'not_found' ? 'This operation could not be found' : "Couldn't reach the backend"}
+          description={sessionError === 'not_found'
+            ? 'The session this link points to no longer exists.'
+            : "Check the backend is running and try again."}
+          actions={<Button variant="outline" size="sm" onClick={() => navigate('/archive')}>Open Archive</Button>}
+        />
+      </div>
+    );
+  }
+
+  if (!isCompleted) {
+    const isThisTheLiveSession = storeActiveSession?.id === session.id;
+    return (
+      <div className="h-full" style={{ background: '#F8FAFC' }}>
+        <ReviewEmptyState
+          icon={Info}
+          title="This operation is still in progress"
+          description="Review & Sign-off only opens once an operation has been ended — there's nothing to review yet."
+          actions={isThisTheLiveSession
+            ? <Button variant="primary" size="sm" onClick={() => navigate('/operation')}>Go to Active Operation</Button>
+            : undefined}
+        />
+      </div>
+    );
+  }
+
+  // ── Completed operation: full Review & Sign-off ────────────────────────
 
   return (
     <motion.div className="h-full flex flex-col" style={{ background: '#F8FAFC' }}
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.22 }}>
+
+      {/* ── Transition banner ────────────────────────────────────────────── */}
+      <div className={cn(
+        'flex items-center gap-3 px-5 py-2.5 flex-shrink-0 border-b',
+        isSigned ? 'bg-emerald-50 border-emerald-100' : 'bg-blue-50 border-blue-100',
+      )}>
+        {isSigned ? <Lock size={15} className="text-emerald-600 flex-shrink-0" /> : <CheckCircle2 size={15} className="text-blue-600 flex-shrink-0" />}
+        <div className="min-w-0">
+          <p className="font-display text-xs font-semibold text-slate-700">
+            {isSigned ? 'Signed & locked' : 'Operation completed'}
+          </p>
+          <p className="font-display text-[11px] text-slate-500">
+            {isSigned
+              ? `Signed by ${session.signedBy ?? session.anesthetist} · ${session.signedAt != null ? formatTime(session.signedAt) : ''} — this record now lives in Archive.`
+              : 'Review the recorded observations before signing off.'}
+          </p>
+        </div>
+        {isSigned && (
+          <Button variant="outline" size="xs" className="ml-auto flex-shrink-0" icon={<ArrowRight size={11} />} onClick={() => navigate('/archive')}>
+            View in Archive
+          </Button>
+        )}
+      </div>
 
       {/* ── Header ───────────────────────────────────────────────────────── */}
       <header className="flex items-center flex-shrink-0 bg-white border-b border-slate-200" style={{ height: 56 }}>
         {/* Patient info */}
         <div className="flex items-center gap-3 px-5 h-full border-r border-slate-200 flex-shrink-0" style={{ minWidth: 300 }}>
           <div className="w-8 h-8 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center flex-shrink-0">
-            <FileText size={14} className="text-slate-500" />
+            <User size={14} className="text-slate-500" />
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className="font-mono text-sm font-bold text-slate-800">{session?.patient.id ?? 'No active session'}</span>
-              {session?.patient.asa && (
+              <span className="font-mono text-sm font-bold text-slate-800">{session.patient.id}</span>
+              {session.patient.asa && (
                 <span className="font-display text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-blue-50 border border-blue-200 text-blue-600">
                   ASA {session.patient.asa}
                 </span>
               )}
             </div>
             <p className="font-display text-[10px] text-slate-500 truncate">
-              {session?.procedure ?? 'Review mode'} · {session?.anesthetist ?? '—'}
+              {session.procedure} · {session.anesthetist}
             </p>
           </div>
         </div>
@@ -919,36 +1437,47 @@ export function ReviewPage() {
         <div className="flex items-center gap-4 px-5 h-full border-r border-slate-200 flex-1">
           <div className="flex items-center gap-3 w-full max-w-sm">
             <CircularProgress
-              value={(resolvedCount / flaggedItems.length) * 100}
+              value={criticalPct}
               size={34} strokeWidth={3} color="#30D158" trackColor="#E2E8F0"
-              label={<span className="font-mono text-[9px] font-bold text-slate-700">{resolvedCount}/{flaggedItems.length}</span>}
+              label={<span className="font-mono text-[9px] font-bold text-slate-700">{criticalResolvedCount}/{criticalTotal}</span>}
             />
             <div className="flex-1 min-w-0">
               <p className="font-display text-xs text-slate-700 font-medium">
-                {allResolved ? 'All readings reviewed' : `${pendingItems.length} pending review`}
+                {loadingFlagged
+                  ? 'Loading exceptions…'
+                  : criticalPendingCount > 0
+                    ? `${criticalPendingCount} blocking exception${criticalPendingCount === 1 ? '' : 's'} pending`
+                    : criticalTotal > 0
+                      ? 'All blocking exceptions resolved'
+                      : 'No blocking exceptions'}
               </p>
-              <ProgressBar value={(resolvedCount / flaggedItems.length) * 100}
+              <ProgressBar value={criticalPct}
                 color="#30D158" size="xs" trackColor="#E2E8F0" className="mt-1" />
             </div>
           </div>
+          {!loadingFlagged && categoryCounts.lowConfidence > 0 && (
+            <span className="font-display text-[10px] text-slate-400 flex-shrink-0 hidden lg:inline">
+              +{categoryCounts.lowConfidence} informational (no action required)
+            </span>
+          )}
           <AnimatePresence>
-            {allResolved && (
+            {readyToSign && !loadingFlagged && !isSigned && (
               <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 flex-shrink-0">
                 <CheckCircle2 size={12} className="text-emerald-600" />
-                <span className="font-display text-[10px] font-semibold text-emerald-700">Ready to sign</span>
+                <span className="font-display text-[10px] font-semibold text-emerald-700">Ready to sign off</span>
               </motion.div>
             )}
           </AnimatePresence>
         </div>
 
-        {/* Sign button */}
+        {/* Sign off button */}
         <div className="flex items-center px-5 h-full flex-shrink-0">
-          <Button variant={allResolved ? 'clinical' : 'secondary'} size="sm"
+          <Button variant={readyToSign && !isSigned ? 'clinical' : 'secondary'} size="sm"
             icon={<Lock size={13} />}
-            disabled={!allResolved || signState !== 'idle'}
+            disabled={loadingFlagged || !readyToSign || isSigned || signState !== 'idle'}
             onClick={() => setSignState('confirming')}>
-            Sign & Lock Record
+            {isSigned ? 'Signed & Locked' : 'Sign Off Operation'}
           </Button>
         </div>
       </header>
@@ -956,59 +1485,66 @@ export function ReviewPage() {
       {/* ── Body ─────────────────────────────────────────────────────────── */}
       <div className="flex flex-1 overflow-hidden min-h-0">
 
-        {/* ── Left sidebar ─────────────────────────────────────────────── */}
+        {/* ── Left sidebar: Exceptions & Alerts ───────────────────────────── */}
         <aside className="flex flex-col flex-shrink-0 bg-white border-r border-slate-200 overflow-hidden" style={{ width: 360 }}>
-          {/* Queue header */}
-          <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-200 flex-shrink-0">
-            <div className="flex items-center gap-2">
+          <div className="px-4 py-3 border-b border-slate-200 flex-shrink-0">
+            <div className="flex items-center gap-2 mb-2.5">
               <AlertTriangle size={13} className="text-slate-400" />
-              <span className="font-display text-xs font-semibold text-slate-700">Flagged Readings</span>
+              <span className="font-display text-xs font-semibold text-slate-700">Exceptions &amp; Alerts</span>
             </div>
-            <AnimatePresence>
-              {pendingItems.length > 0 && (
-                <motion.span key={pendingItems.length} initial={{ scale: 1.4 }} animate={{ scale: 1 }}
-                  className="font-mono text-[10px] px-1.5 py-0.5 rounded-full font-bold"
-                  style={{ background: 'rgba(255,59,48,0.08)', color: '#FF3B30', border: '1px solid rgba(255,59,48,0.25)' }}>
-                  {pendingItems.length}
-                </motion.span>
-              )}
-            </AnimatePresence>
+            <div className="grid grid-cols-2 gap-1.5">
+              {(Object.keys(EXCEPTION_CATEGORY_CFG) as ExceptionCategory[]).map((cat) => {
+                const cfg = EXCEPTION_CATEGORY_CFG[cat];
+                const count = categoryCounts[cat];
+                const selected = category === cat;
+                const Icon = cfg.icon;
+                return (
+                  <button key={cat} onClick={() => setCategory(cat)}
+                    className={cn(
+                      'flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-lg border text-left transition-colors',
+                      selected ? 'bg-slate-50 border-slate-300' : 'border-slate-100 hover:bg-slate-50',
+                    )}>
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      <Icon size={11} style={{ color: cfg.color }} className="flex-shrink-0" />
+                      <span className="font-display text-[10px] text-slate-600 truncate">{cfg.label}</span>
+                    </span>
+                    <span className="font-mono text-[11px] font-bold flex-shrink-0" style={{ color: count > 0 ? cfg.color : '#CBD5E1' }}>
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
-          {/* Queue items */}
+          {/* Category list */}
           <div className="overflow-y-auto flex-1 min-h-0">
-            {flaggedItems.some(i => i.severity === 'critical') && (
-              <>
-                <div className="px-4 py-1.5 bg-red-50 border-b border-red-100">
-                  <span className="font-display text-[9px] text-red-500 uppercase tracking-[0.18em] font-bold">Critical</span>
-                </div>
-                {flaggedItems.filter(i => i.severity === 'critical').map(item => (
-                  <QueueCard key={item.id} item={item} selected={selectedId === item.id}
-                    onSelect={() => { setSelectedId(item.id); setActiveTab('frame'); }} />
-                ))}
-              </>
-            )}
-            {flaggedItems.some(i => i.severity === 'warning') && (
-              <>
-                <div className="px-4 py-1.5 bg-amber-50 border-b border-amber-100 border-t border-slate-100">
-                  <span className="font-display text-[9px] text-amber-600 uppercase tracking-[0.18em] font-bold">Warning</span>
-                </div>
-                {flaggedItems.filter(i => i.severity === 'warning').map(item => (
-                  <QueueCard key={item.id} item={item} selected={selectedId === item.id}
-                    onSelect={() => { setSelectedId(item.id); setActiveTab('frame'); }} />
-                ))}
-              </>
+            {loadingFlagged ? (
+              <div className="flex flex-col items-center justify-center h-32 text-slate-400 gap-2">
+                <p className="font-display text-xs">Loading exceptions…</p>
+              </div>
+            ) : visibleItems.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-32 text-slate-400 gap-2 px-4 text-center">
+                <CheckCircle2 size={22} className="opacity-30" />
+                <p className="font-display text-xs">{EMPTY_CATEGORY_MESSAGE[category]}</p>
+              </div>
+            ) : (
+              visibleItems.map(item => (
+                <QueueCard key={item.id} item={item} selected={selectedId === item.id}
+                  onSelect={() => setSelectedId(item.id)} />
+              ))
             )}
           </div>
 
           {/* Inspector */}
           {selectedItem && (
             <ReadingInspector key={selectedItem.id}
-              item={selectedItem} allItems={flaggedItems}
+              item={selectedItem} allItems={visibleItems}
               currentIndex={selectedIndex}
               onNavigate={handleNavigate}
               onCorrect={handleCorrect}
               onDismiss={handleDismiss}
+              locked={isSigned}
             />
           )}
         </aside>
@@ -1048,19 +1584,19 @@ export function ReviewPage() {
                 aria-labelledby={`review-tab-${activeTab}`}
                 initial={{ opacity: 0, y: 3 }} animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -3 }} transition={{ duration: 0.14 }}>
-                {activeTab === 'frame' && (
-                  <FrameViewer selectedVital={selectedItem?.vital} flaggedItems={flaggedItems} />
+                {activeTab === 'overview' && (
+                  <OverviewTab session={session} readings={readings} alerts={alerts} loadingAlerts={loadingAlerts} isSigned={isSigned} />
+                )}
+                {activeTab === 'trends' && (
+                  loadingReadings
+                    ? <div className="flex items-center justify-center h-full text-slate-400"><p className="font-display text-sm">Loading trends…</p></div>
+                    : <TrendsTab readings={readings} />
+                )}
+                {activeTab === 'observations' && (
+                  <ObservationLedgerTab readings={readings} loading={loadingReadings} />
                 )}
                 {activeTab === 'timeline' && (
-                  <div className="h-full overflow-y-auto p-5">
-                    <Timeline events={MOCK_TIMELINE} />
-                  </div>
-                )}
-                {activeTab === 'audit' && <AuditTrail entries={auditEntries} />}
-                {activeTab === 'events' && (
-                  <EventMarkerEditor events={eventMarkers}
-                    onAdd={m => setEventMarkers(p => [...p, { ...m, id: `EM-${Date.now()}` }])}
-                    onRemove={id => setEventMarkers(p => p.filter(e => e.id !== id))} />
+                  <CaseTimelinePanel events={timelineEvents} />
                 )}
               </motion.div>
             </AnimatePresence>
@@ -1074,11 +1610,16 @@ export function ReviewPage() {
         onClose={() => setSignState('idle')}
         onConfirm={handleSignConfirm}
         session={session}
+        criticalTotal={criticalTotal}
+        informationalCount={informationalCount}
+        signing={signing}
       />
       <PdfDialog
         signState={signState}
-        pdfProgress={pdfProgress}
         onClose={() => setSignState('idle')}
+        sessionId={session.id}
+        onGoArchive={() => navigate('/archive')}
+        session={session}
       />
     </motion.div>
   );

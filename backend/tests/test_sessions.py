@@ -171,3 +171,88 @@ def test_alerts_save_list_active_and_ack():
 def test_ack_nonexistent_alert_is_404():
     r = client.post("/api/alerts/NOPE/ack")
     assert r.status_code == 404
+
+
+# --- readings (M5.7) --------------------------------------------------------
+
+
+def test_get_readings_returns_persisted_rows_camelcase_with_source_and_status():
+    session = _create_session()
+    session_id = session["id"]
+
+    db = SessionLocal()
+    repo.save_reading(
+        db, session_id,
+        {"hr": 76, "timestamp": 1_700_000_000_000},
+        confidence=95.0, provenance="ai_high",
+        source="camera", field_status={"hr": "confirmed"},
+    )
+    repo.save_reading(
+        db, session_id,
+        {"hr": 78, "timestamp": 1_700_000_001_000},
+        confidence=96.0, provenance="ai_high",
+        source="camera", field_status={"hr": "confirmed"},
+    )
+    db.close()
+
+    r = client.get(f"/api/sessions/{session_id}/readings")
+    assert r.status_code == 200
+    rows = r.json()
+    assert len(rows) == 2
+    assert [row["hr"] for row in rows] == [76, 78]
+    assert rows[0]["source"] == "camera"
+    assert rows[0]["fieldStatus"] == {"hr": "confirmed"}
+    assert rows[0]["timestamp"] == 1_700_000_000_000
+
+
+def test_get_readings_since_returns_only_newer_rows():
+    session = _create_session()
+    session_id = session["id"]
+
+    db = SessionLocal()
+    for i, ts in enumerate([1_700_000_000_000, 1_700_000_001_000, 1_700_000_002_000]):
+        repo.save_reading(db, session_id, {"hr": 70 + i, "timestamp": ts}, source="camera")
+    db.close()
+
+    r = client.get(f"/api/sessions/{session_id}/readings", params={"since": 1_700_000_000_000})
+    assert r.status_code == 200
+    rows = r.json()
+    assert [row["timestamp"] for row in rows] == [1_700_000_001_000, 1_700_000_002_000]
+
+
+def test_get_readings_limit_caps_the_oldest_first():
+    session = _create_session()
+    session_id = session["id"]
+
+    db = SessionLocal()
+    for i, ts in enumerate([1_700_000_000_000, 1_700_000_001_000, 1_700_000_002_000]):
+        repo.save_reading(db, session_id, {"hr": 70 + i, "timestamp": ts}, source="camera")
+    db.close()
+
+    r = client.get(f"/api/sessions/{session_id}/readings", params={"limit": 2})
+    assert r.status_code == 200
+    rows = r.json()
+    assert [row["timestamp"] for row in rows] == [1_700_000_000_000, 1_700_000_001_000]
+
+
+def test_get_readings_for_unknown_session_is_404():
+    r = client.get("/api/sessions/NOPE/readings")
+    assert r.status_code == 404
+
+
+def test_get_readings_for_a_completed_session_still_works():
+    """Archive/Review read a session's timeline after it has ended -- the
+    route must not require status=active."""
+    session = _create_session()
+    session_id = session["id"]
+
+    db = SessionLocal()
+    repo.save_reading(db, session_id, {"hr": 76, "timestamp": 1_700_000_000_000}, source="camera")
+    db.close()
+
+    r = client.post(f"/api/sessions/{session_id}/end")
+    assert r.status_code == 200
+
+    r = client.get(f"/api/sessions/{session_id}/readings")
+    assert r.status_code == 200
+    assert len(r.json()) == 1

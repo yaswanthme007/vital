@@ -4,7 +4,7 @@ events, notes, alerts) — no new DB writes, and no frontend-facing Pydantic
 model to match, so the returned dict shape is new/additive (same freedom as
 S9's DRUG_PRESETS)."""
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from sqlalchemy.orm import Session as OrmSession
 
@@ -19,10 +19,30 @@ def _generate_marks(start: int, end: int, interval_ms: int) -> List[int]:
     return list(range(start, end + 1, interval_ms))
 
 
-def _nearest_reading(readings: List[dict], mark: int) -> dict:
-    if not readings:
-        return {}
-    return min(readings, key=lambda r: abs(r["timestamp"] - mark))
+def _field_index(readings: List[dict]) -> Dict[str, List[dict]]:
+    """M5.7: per-field list of {timestamp, value}, one entry per reading
+    where THAT field is non-null. Post-M5.7, app.ws.vitals.send_loop only
+    persists fields reconcile() marked 'confirmed', so a row is sparse by
+    design — a tick that confirmed only HR writes a row with every other
+    field NULL. A single 'nearest row' (the pre-M5.7 approach) could
+    therefore land on a row where HR is set but SpO2 happens to be null,
+    even though a SpO2 confirmation exists one tick away. Indexing each
+    field independently and nearest-matching it on its own means a mark's
+    SpO2 always comes from the actual nearest SpO2 OBSERVATION, not from
+    whichever row happened to be nearest overall."""
+    index: Dict[str, List[dict]] = {field: [] for field in VITAL_FIELDS}
+    for r in readings:
+        for field in VITAL_FIELDS:
+            value = r.get(field)
+            if value is not None:
+                index[field].append({"timestamp": r["timestamp"], "value": value})
+    return index
+
+
+def _nearest_field_value(entries: List[dict], mark: int) -> Optional[float]:
+    if not entries:
+        return None
+    return min(entries, key=lambda e: abs(e["timestamp"] - mark))["value"]
 
 
 def _nearest_mark_index(marks: List[int], timestamp: int) -> int:
@@ -54,12 +74,12 @@ def build_chart(db: OrmSession, session_id: str, interval_minutes: float = 5) ->
     interval_ms = int(interval_minutes * 60 * 1000)
     marks = _generate_marks(start, end, interval_ms)
 
+    field_index = _field_index(readings)
     rows = []
     for mark in marks:
-        nearest = _nearest_reading(readings, mark)
         row = {"timestamp": mark, "events": []}
         for field in VITAL_FIELDS:
-            row[field] = nearest.get(field)
+            row[field] = _nearest_field_value(field_index[field], mark)
         rows.append(row)
 
     def _overlay(timestamp: int, event: dict) -> None:
@@ -97,9 +117,15 @@ def build_chart(db: OrmSession, session_id: str, interval_minutes: float = 5) ->
     for row in rows:
         row["events"].sort(key=lambda e: e["timestamp"])
 
-    hrs = [r["hr"] for r in readings if r["hr"] is not None]
-    spo2s = [r["spo2"] for r in readings if r["spo2"] is not None]
-    etco2s = [r["etco2"] for r in readings if r["etco2"] is not None]
+    # M5.7: same "prefer camera, fall back to everything" rule as
+    # repo.end_session's summary — see that function's comment. Keeps the
+    # PDF chart's own summary consistent with the session summary it's
+    # printed alongside.
+    camera_readings = [r for r in readings if r.get("source") == "camera"]
+    summary_readings = camera_readings if camera_readings else readings
+    hrs = [r["hr"] for r in summary_readings if r["hr"] is not None]
+    spo2s = [r["spo2"] for r in summary_readings if r["spo2"] is not None]
+    etco2s = [r["etco2"] for r in summary_readings if r["etco2"] is not None]
 
     vital_summary = {
         "avgHr": (sum(hrs) / len(hrs)) if hrs else 0.0,

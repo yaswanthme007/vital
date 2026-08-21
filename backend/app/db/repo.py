@@ -1,3 +1,4 @@
+import hashlib
 import random
 import time
 from typing import List, Optional
@@ -8,6 +9,8 @@ from app.db.models import (
     AlarmLimitRow,
     AlertRow,
     AuditEntryRow,
+    CalibrationProfileRow,
+    CalibrationReferenceFrameRow,
     DrugEventRow,
     FlaggedReadingRow,
     SessionNoteRow,
@@ -15,9 +18,18 @@ from app.db.models import (
     VitalReadingRow,
 )
 from app.models.alert import Alert
+from app.models.calibration import CalibrationProfile
 from app.models.drug import DrugEvent
 from app.models.review import AuditEntry, FlaggedReading
-from app.models.session import ArchivedSession, Patient, Session, SessionFormData, SessionNote, VitalSummary
+from app.models.session import (
+    ArchivedSession,
+    ObservationStats,
+    Patient,
+    Session,
+    SessionFormData,
+    SessionNote,
+    VitalSummary,
+)
 from app.models.vitals import AlarmLimit
 
 # 5-minute correction window for drug_events, per task: dose/time can only be
@@ -109,6 +121,42 @@ def _session_row_to_model(db: OrmSession, row: SessionRow) -> Session:
     return Session(**_session_fields(db, row))
 
 
+_NUMERIC_FIELDS = ("hr", "spo2", "nibp_systolic", "nibp_diastolic", "nibp_mean", "etco2", "temp", "rr")
+
+
+def _observation_stats(db: OrmSession, session_id: str) -> ObservationStats:
+    """M5.7. Real numbers for Archive's 'AI Processing' panel, computed on
+    read from this session's own VitalReadingRow rows rather than a
+    hardcoded fixture (see ObservationStats' own docstring). No new counter
+    column is incremented per-frame anywhere -- this is cheap enough (one
+    indexed query per Archive card render) that a live counter would be
+    premature, and it can never drift from what is actually in the table."""
+    rows = db.query(VitalReadingRow).filter(VitalReadingRow.session_id == session_id).all()
+    if not rows:
+        return ObservationStats()
+
+    confirmed_observations = sum(
+        1 for r in rows for field in _NUMERIC_FIELDS if getattr(r, field) is not None
+    )
+    confidences = [r.confidence for r in rows if r.confidence is not None]
+    avg_confidence = (sum(confidences) / len(confidences)) if confidences else None
+
+    sources = {r.source for r in rows if r.source is not None}
+    if len(sources) == 1:
+        source = next(iter(sources))
+    elif len(sources) > 1:
+        source = "mixed"
+    else:
+        source = None  # every row predates the `source` column (pre-M5.7)
+
+    return ObservationStats(
+        readings_count=len(rows),
+        confirmed_observations=confirmed_observations,
+        avg_confidence=avg_confidence,
+        source=source,
+    )
+
+
 def _session_row_to_archived_model(db: OrmSession, row: SessionRow) -> ArchivedSession:
     return ArchivedSession(
         **_session_fields(db, row),
@@ -118,6 +166,7 @@ def _session_row_to_archived_model(db: OrmSession, row: SessionRow) -> ArchivedS
             avg_etco2=row.vital_summary_avg_etco2 or 0.0,
             duration_min=row.vital_summary_duration_min or 0.0,
         ),
+        observation_stats=_observation_stats(db, row.id),
     )
 
 
@@ -261,9 +310,20 @@ def end_session(db: OrmSession, session_id: str) -> Optional[ArchivedSession]:
     assert_not_signed(db, session_id)
 
     readings = db.query(VitalReadingRow).filter(VitalReadingRow.session_id == session_id).all()
-    hrs = [r.hr for r in readings if r.hr is not None]
-    spo2s = [r.spo2 for r in readings if r.spo2 is not None]
-    etco2s = [r.etco2 for r in readings if r.etco2 is not None]
+    # M5.7: prefer genuine camera observations for the summary a signed PDF
+    # chart reports. Falls back to every row when the session has none
+    # tagged 'camera' -- a synthetic-source session, and any pre-M5.7 row
+    # (source is NULL there), so a chart/summary is never silently emptied
+    # by a column that didn't exist when the row was written. Every row
+    # counted here is already confirmed-only post-M5.7 (send_loop only
+    # persists confirmed fields), so this fallback does not reintroduce
+    # held/baseline values -- it only widens WHICH rows count, not what
+    # counts as an observation.
+    camera_readings = [r for r in readings if r.source == "camera"]
+    summary_readings = camera_readings if camera_readings else readings
+    hrs = [r.hr for r in summary_readings if r.hr is not None]
+    spo2s = [r.spo2 for r in summary_readings if r.spo2 is not None]
+    etco2s = [r.etco2 for r in summary_readings if r.etco2 is not None]
 
     row.end_time = int(time.time() * 1000)
     row.status = "completed"
@@ -307,7 +367,19 @@ def save_reading(
     confidence: Optional[float] = None,
     provenance: Optional[str] = None,
     per_vital_confidence: Optional[dict] = None,
+    source: Optional[str] = None,
+    field_status: Optional[dict] = None,
 ) -> None:
+    """M5.7: `source` ('camera'|'synthetic'|'replay') and `field_status`
+    (the per-field confirmed/held/baseline map from
+    app.validation.reconcile's field_status out-param) are both optional and
+    default to None, matching every column they land on -- an existing
+    caller (or a pre-M5.7 row already in the database) that never mentions
+    them behaves exactly as before. app.ws.vitals.send_loop is the only
+    caller that passes them: it only ever calls this for fields it just
+    determined were 'confirmed', so `reading` here is expected to already be
+    the CONFIRMED-only subset (missing fields simply absent -> NULL
+    columns), not the full held-value display reading."""
     assert_not_signed(db, session_id)
     row = VitalReadingRow(
         session_id=session_id,
@@ -323,6 +395,8 @@ def save_reading(
         confidence=confidence,
         provenance=provenance,
         per_vital_confidence=per_vital_confidence,
+        source=source,
+        field_status=field_status,
     )
     db.add(row)
 
@@ -333,19 +407,33 @@ def save_reading(
     db.commit()
 
 
-def list_readings(db: OrmSession, session_id: str) -> List[dict]:
+def list_readings(
+    db: OrmSession,
+    session_id: str,
+    since_ms: Optional[int] = None,
+    limit: Optional[int] = None,
+) -> List[dict]:
     """Returns plain camelCase reading dicts, NOT the strict VitalReading
     Pydantic model — OCR-sourced readings can have per-vital gaps (None),
     but VitalReading requires all 8 numeric fields to be non-null floats
-    (matching the frontend exactly). No route in this session returns
-    readings directly; this is consumed internally (end_session's summary)
-    and by tests asserting persistence/ordering."""
-    rows = (
-        db.query(VitalReadingRow)
-        .filter(VitalReadingRow.session_id == session_id)
-        .order_by(VitalReadingRow.timestamp)
-        .all()
-    )
+    (matching the frontend exactly). Consumed internally (end_session's
+    summary, chart/assemble.build_chart) and by GET
+    /api/sessions/{id}/readings (M5.7) for the frontend observation
+    ledger/Review/Archive.
+
+    since_ms/limit (M5.7, both optional): GET /readings' polling/pagination
+    knobs, applied AFTER ordering by timestamp (oldest-first, unchanged) so
+    `limit` takes the earliest `limit` rows after `since_ms` — a client
+    resuming a ledger it already has most of asks for `since=<last seen
+    timestamp>` and gets exactly the rows it's missing, not the whole
+    session replayed from scratch every poll."""
+    query = db.query(VitalReadingRow).filter(VitalReadingRow.session_id == session_id)
+    if since_ms is not None:
+        query = query.filter(VitalReadingRow.timestamp > since_ms)
+    query = query.order_by(VitalReadingRow.timestamp)
+    if limit is not None:
+        query = query.limit(limit)
+    rows = query.all()
     return [
         {
             "hr": r.hr,
@@ -360,6 +448,8 @@ def list_readings(db: OrmSession, session_id: str) -> List[dict]:
             "confidence": r.confidence,
             "provenance": r.provenance,
             "perVitalConfidence": r.per_vital_confidence,
+            "source": r.source,
+            "fieldStatus": r.field_status,
         }
         for r in rows
     ]
@@ -687,6 +777,146 @@ def list_recent_drugs_by_user(db: OrmSession, user: str, limit: int = 10) -> Lis
         if len(distinct_names) >= limit:
             break
     return distinct_names
+
+
+# ─── calibration profiles (M5.2) ───────────────────────────────────────
+
+
+def _calibration_row_to_model(
+    row: CalibrationProfileRow, db: Optional[OrmSession] = None
+) -> CalibrationProfile:
+    """db is optional so existing callers keep working; when supplied, the
+    M5.3 reference-frame metadata is filled in with an existence check that
+    never loads the image bytes themselves."""
+    ref_row = db.get(CalibrationReferenceFrameRow, row.id) if db is not None else None
+    return CalibrationProfile(
+        has_reference_frame=ref_row is not None,
+        reference_frame_sha256=ref_row.sha256 if ref_row is not None else None,
+        id=row.id,
+        theatre_id=row.theatre_id,
+        camera_id=row.camera_id,
+        layout_id=row.layout_id,
+        version=row.version,
+        reference_width=row.reference_width,
+        reference_height=row.reference_height,
+        roi_boxes=row.roi_boxes,
+        field_meta=row.field_meta or {},
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        is_active=row.is_active,
+    )
+
+
+def save_calibration_profile(db: OrmSession, profile_data: dict) -> CalibrationProfile:
+    """Deactivates any existing active profile and inserts the new one as
+    active. 'Calibrate once' means the newest SAVED profile is THE active
+    one -- nothing in this milestone's scope needs more than one profile
+    live at a time (see app.models.calibration.CalibrationProfile's
+    docstring). profile_data is a plain dict shaped like
+    SaveCalibrationRequest.model_dump() (app.api.calibration) -- snake_case
+    keys, roi_boxes/field_meta already plain-JSON-serializable nested
+    dicts (Pydantic's own .model_dump() cascades through nested models)."""
+    now_ms = int(time.time() * 1000)
+    db.query(CalibrationProfileRow).filter(CalibrationProfileRow.is_active.is_(True)).update({"is_active": False})
+
+    row = CalibrationProfileRow(
+        id=_gen_id("CAL"),
+        theatre_id=profile_data.get("theatre_id"),
+        camera_id=profile_data.get("camera_id"),
+        layout_id=profile_data.get("layout_id") or "default",
+        version=profile_data.get("version") or 1,
+        reference_width=profile_data["reference_width"],
+        reference_height=profile_data["reference_height"],
+        roi_boxes=profile_data["roi_boxes"],
+        field_meta=profile_data.get("field_meta") or {},
+        created_at=now_ms,
+        updated_at=now_ms,
+        is_active=True,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _calibration_row_to_model(row, db)
+
+
+def get_active_calibration_profile(db: OrmSession) -> Optional[CalibrationProfile]:
+    row = (
+        db.query(CalibrationProfileRow)
+        .filter(CalibrationProfileRow.is_active.is_(True))
+        .order_by(CalibrationProfileRow.created_at.desc())
+        .first()
+    )
+    return _calibration_row_to_model(row, db) if row else None
+
+
+def save_calibration_reference_frame(
+    db: OrmSession, profile_id: str, image_bytes: bytes, mime: str, width: int, height: int
+) -> str:
+    """M5.3. Stores the frame a profile's boxes were drawn and Verified
+    against, so app.pipeline.layout_tracker can re-anchor them later.
+    Returns the sha256, which is also what identifies the frame in eval
+    artifacts and audit trails. Replaces any existing frame for this profile
+    (a profile has exactly one reference by definition)."""
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    db.query(CalibrationReferenceFrameRow).filter(
+        CalibrationReferenceFrameRow.profile_id == profile_id
+    ).delete()
+    db.add(
+        CalibrationReferenceFrameRow(
+            profile_id=profile_id,
+            image_bytes=image_bytes,
+            mime=mime,
+            sha256=digest,
+            width=width,
+            height=height,
+            created_at=int(time.time() * 1000),
+        )
+    )
+    db.commit()
+    return digest
+
+
+def get_calibration_reference_frame(db: OrmSession, profile_id: str) -> Optional[CalibrationReferenceFrameRow]:
+    """The raw row (bytes + provenance), or None when this profile has no
+    reference frame -- which is not an error: every profile saved before
+    M5.3, and any saved without a captured frame, runs untracked exactly as
+    M5.2 did."""
+    return db.get(CalibrationReferenceFrameRow, profile_id)
+
+
+def has_calibration_reference_frame(db: OrmSession, profile_id: str) -> bool:
+    """Existence check that does NOT load the image bytes -- used to annotate
+    API responses without dragging a few hundred KB through them."""
+    return (
+        db.query(CalibrationReferenceFrameRow.profile_id)
+        .filter(CalibrationReferenceFrameRow.profile_id == profile_id)
+        .first()
+        is not None
+    )
+
+
+def get_calibration_profile(db: OrmSession, profile_id: str) -> Optional[CalibrationProfile]:
+    row = db.get(CalibrationProfileRow, profile_id)
+    return _calibration_row_to_model(row, db) if row else None
+
+
+def invalidate_active_calibration_profile(db: OrmSession) -> bool:
+    """Deactivates whatever profile is currently active, without deleting
+    its row (kept for audit/history — cheap, and mirrors this codebase's
+    append-only posture elsewhere, e.g. AuditEntryRow). Returns whether a
+    profile was actually active to invalidate. The live-camera path
+    (app.ws.vitals._camera_roi_extractor) treats 'no active profile' as
+    'fall back to the default ROI_ENGINE', never as an error — this is the
+    explicit, operator-triggered escape hatch Phase 4/12 ask for: a stale
+    profile must not silently keep being used for a visibly different
+    monitor."""
+    updated = (
+        db.query(CalibrationProfileRow)
+        .filter(CalibrationProfileRow.is_active.is_(True))
+        .update({"is_active": False})
+    )
+    db.commit()
+    return updated > 0
 
 
 # ─── sign / lock ────────────────────────────────────────────────────────

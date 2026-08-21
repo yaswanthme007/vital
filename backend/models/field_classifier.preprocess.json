@@ -1,0 +1,14 @@
+{
+  "crop_size": 64,
+  "channels": 1,
+  "scale": 0.00392156862745098,
+  "input_name": "crop",
+  "output_name": "logits",
+  "input_shape": [
+    1,
+    1,
+    64,
+    64
+  ],
+  "note": "input is uint8 grayscale, letterbox-normalized by app.eval.tier2_field_dataset._letterbox_gray (aspect-preserving resize onto a black CROP_SIZExCROP_SIZE canvas, centered), then cast to float32 and divided by 255 -- no mean/std normalization, same convention as models/digit_cnn.preprocess.json."
+}
