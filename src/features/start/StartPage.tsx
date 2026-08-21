@@ -85,7 +85,11 @@ export function StartPage() {
     setLoading(true);
     try {
       await startSession({ ...(form as SessionFormData), asa: asa ?? undefined });
-      navigate('/surgery');
+      // M5.7.1: camera calibration is mandatory before Active Operation --
+      // see OperationPage's own guard, which redirects back here anyway if
+      // this is ever bypassed. Routing straight to /calibration means the
+      // operator never has to discover it manually.
+      navigate('/calibration');
     } catch (err) {
       console.error('Failed to start session', err);
       toast.error('Could not start the case', {

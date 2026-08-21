@@ -1,6 +1,6 @@
 from typing import Optional
 
-from sqlalchemy import JSON, Boolean, Float, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Float, ForeignKey, Index, Integer, LargeBinary, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -47,6 +47,61 @@ class SessionRow(Base):
     vital_summary_duration_min: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
 
+class CalibrationProfileRow(Base):
+    """M5.2. Deliberately NOT foreign-keyed to sessions — a calibration
+    profile outlives any one case (see app.models.calibration.
+    CalibrationProfile's docstring). is_active marks "the current profile
+    the live camera path should use"; repo.save_calibration_profile()
+    deactivates any prior active row before inserting the new one, so at
+    most one row is ever active at a time."""
+
+    __tablename__ = "calibration_profiles"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    theatre_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    camera_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    layout_id: Mapped[str] = mapped_column(String, default="default")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    reference_width: Mapped[int] = mapped_column(Integer)
+    reference_height: Mapped[int] = mapped_column(Integer)
+    roi_boxes: Mapped[dict] = mapped_column(JSON)
+    field_meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[int] = mapped_column(Integer)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+
+
+class CalibrationReferenceFrameRow(Base):
+    """M5.3. The exact frame an operator's calibration boxes were drawn and
+    Verified against -- what app.pipeline.layout_tracker re-anchors those
+    boxes to on every later frame.
+
+    A SEPARATE TABLE, not columns on CalibrationProfileRow, for two reasons.
+    (1) This codebase creates tables with Base.metadata.create_all and has no
+    migration tooling; create_all adds missing TABLES to an existing database
+    but never missing COLUMNS, so a new table upgrades a deployed vital.db
+    cleanly while new columns would not. (2) The blob is ~100-400KB and
+    repo.get_active_calibration_profile() runs on every WebSocket connection;
+    keeping the image out of that row means the common lookup stays small and
+    the bytes are fetched only when a tracker is actually being built.
+
+    Rows are keyed by profile id, so a profile without one (every profile
+    saved before M5.3, and any profile saved without a captured frame) simply
+    has no row here and runs untracked -- M5.2's exact behaviour."""
+
+    __tablename__ = "calibration_reference_frames"
+
+    profile_id: Mapped[str] = mapped_column(String, primary_key=True)
+    image_bytes: Mapped[bytes] = mapped_column(LargeBinary)
+    mime: Mapped[str] = mapped_column(String, default="image/jpeg")
+    # Recorded so an eval artifact or an audit can prove WHICH frame a given
+    # run tracked against, rather than trusting that it was the right one.
+    sha256: Mapped[str] = mapped_column(String)
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[int] = mapped_column(Integer)
+
+
 class SessionNoteRow(Base):
     __tablename__ = "session_notes"
 
@@ -77,6 +132,26 @@ class VitalReadingRow(Base):
     confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     provenance: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     per_vital_confidence: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    # M5.7. `source` distinguishes a genuine camera observation from a
+    # synthetic/replay tick -- app.ws.vitals.send_loop stamps this on every
+    # row it writes, and app.db.repo's summary/chart readers filter on it so
+    # a Demo Mode or synthetic session can never be averaged into a camera
+    # session's "confirmed vitals" (and vice versa). Nullable because every
+    # row persisted before this column existed has no source recorded --
+    # readers must treat NULL as "unknown, include cautiously", never as
+    # "camera". `field_status` is the row-level twin of
+    # app.validation.reconcile's per-field field_status out-param
+    # (confirmed/held/baseline per field) -- kept alongside the row so a
+    # reader can tell, after the fact, exactly which of this row's non-null
+    # fields were genuine OBSERVATIONS at this timestamp. A row is only ever
+    # written for fields that were 'confirmed' (see send_loop), so today
+    # every value here is redundant with "the field is non-null" -- it is
+    # still persisted explicitly so that invariant is auditable rather than
+    # implicit, and so a future relaxation of what gets written doesn't
+    # silently start lying about what was actually observed.
+    source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    field_status: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 
 class AlertRow(Base):

@@ -1,0 +1,169 @@
+{
+  "milestone": "M5.6",
+  "featureFlags": {
+    "ROI_ENGINE": {
+      "value": "tesseract",
+      "default": "tesseract",
+      "explicitlySet": false,
+      "scope": "NON-CAMERA paths only (ReplaySource('pipeline'), eval scripts, and the fallback when no calibration profile exists). The live camera WebSocket binds the database's active CalibrationProfile directly and never reads this flag; POST /api/pipeline/read-frame prefers that same profile since M5.6."
+    },
+    "OCR_ENGINE": {
+      "value": "tesseract",
+      "default": "tesseract",
+      "explicitlySet": false
+    },
+    "LAYOUT_TRACKING": {
+      "value": "auto",
+      "default": "auto",
+      "explicitlySet": false,
+      "enabled": true
+    },
+    "TEMPORAL_CORROBORATION": {
+      "value": "off",
+      "default": "off",
+      "explicitlySet": false,
+      "enabled": false,
+      "note": "Must remain OFF in production. M5.4 found a confidently-wrong regression this mechanism can produce; M5.4.1 closed that specific hole with a crop-integrity gate but measured zero net accuracy benefit, so M5.5 recommended against enabling it and M5.6 does not enable it. The implementation, its tests and its eval harness stay in the tree as an experimental/research feature."
+    }
+  },
+  "ocr": {
+    "digitConfig": "--psm 8",
+    "digitPsm10Config": "--psm 10",
+    "psm10Vitals": [
+      "rr",
+      "spo2"
+    ],
+    "nibpConfig": "--psm 6",
+    "etco2Config": "--psm 8",
+    "charWhitelist": null,
+    "whitelistNote": "M5.1 removed tessedit_char_whitelist everywhere; see docs/M5_1_OCR_CONFIDENCE_REPORT.md.",
+    "tesseractVersion": "tesseract v5.4.0.20240606"
+  },
+  "calibration": {
+    "widthSafetyPadFraction": 0.2,
+    "maxAspectRatioDrift": 0.2,
+    "schema": "app.models.calibration.CalibrationProfile"
+  },
+  "tracking": {
+    "minInliers": 20,
+    "minRawMatches": 30,
+    "maxReprojectionErrorPx": 4.0,
+    "minScale": 0.4,
+    "maxScale": 2.5,
+    "maxRotationDeg": 20.0,
+    "maxTranslationDiagonals": 1.5,
+    "trackMaxDim": 640,
+    "orbFeatures": 4000
+  },
+  "confidence": {
+    "confidenceHighMin": 90,
+    "confidenceMediumMin": 70,
+    "rangeBounds": {
+      "hr": [
+        0,
+        250
+      ],
+      "spo2": [
+        50,
+        100
+      ],
+      "temp": [
+        30,
+        44
+      ],
+      "etco2": [
+        0,
+        100
+      ],
+      "rr": [
+        0,
+        60
+      ],
+      "nibpSystolic": [
+        40,
+        260
+      ],
+      "nibpDiastolic": [
+        20,
+        180
+      ],
+      "nibpMean": [
+        20,
+        220
+      ]
+    },
+    "fahrenheitBounds": [
+      86.0,
+      111.2
+    ],
+    "jumpLimits": {
+      "hr": [
+        40,
+        3.0
+      ],
+      "spo2": [
+        15,
+        3.0
+      ],
+      "temp": [
+        2.0,
+        3.0
+      ],
+      "etco2": [
+        20,
+        3.0
+      ],
+      "rr": [
+        15,
+        3.0
+      ],
+      "nibpSystolic": [
+        40,
+        3.0
+      ],
+      "nibpDiastolic": [
+        30,
+        3.0
+      ],
+      "nibpMean": [
+        35,
+        3.0
+      ]
+    }
+  },
+  "temporal": {
+    "confidenceTemporalFloor": 40.0,
+    "temporalAgreementMinRun": 3,
+    "activeInThisProcess": false
+  },
+  "alerts": {
+    "throttleWindowMs": 30000
+  },
+  "models": {
+    "fieldClassifierOnnxPresent": true,
+    "digitCnnOnnxPresent": true,
+    "fieldClassifierLoaded": false,
+    "digitCnnLoaded": false,
+    "note": "Both artifacts are inert in the shipped configuration: the calibrated ROI path uses no classifier (an operator draws the boxes) and OCR_ENGINE=tesseract never touches the digit CNN. See docs/ARCHITECTURE.md."
+  },
+  "runtime": {
+    "python": "3.13.9",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "dependencies": {
+      "fastapi": "0.141.1",
+      "uvicorn": "0.52.1",
+      "pydantic": "2.13.4",
+      "sqlalchemy": "2.0.51",
+      "pytest": "9.1.1",
+      "httpx": "0.28.1",
+      "Pillow": "12.3.0",
+      "opencv-python-headless": "5.0.0.93",
+      "numpy": "2.5.1",
+      "pytesseract": "0.3.13",
+      "torch": "2.13.0",
+      "onnx": "1.22.0",
+      "onnxruntime": "1.28.0"
+    }
+  },
+  "validationClaim": "VITAL is validated on the available real-world monitor video datasets and the real application pipeline. It is a technical demonstration/prototype: not clinically validated, not medically certified, not approved for patient care, and not established as diagnostically accurate."
+}

@@ -9,13 +9,16 @@ device class."""
 
 import io
 from datetime import datetime, timezone
-from typing import List
+from typing import Dict, List, Optional
 
+from reportlab.graphics.charts.legends import Legend
+from reportlab.graphics.charts.lineplots import LinePlot
+from reportlab.graphics.shapes import Drawing, String
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from sqlalchemy.orm import Session as OrmSession
 
 from app.chart.assemble import build_chart
@@ -90,6 +93,141 @@ def _combined_corrections(db: OrmSession, session_id: str) -> List[dict]:
     return entries
 
 
+# ─── Vital Trend Charts (real, sparse, non-interpolated observations) ─────
+#
+# Deliberately built from repo.list_readings directly rather than
+# build_chart()'s periodic `rows` -- those rows are nearest-neighbour FILLED
+# onto fixed interval marks for the tabular chart, which is the right shape
+# for a scannable table but would misrepresent an unobserved gap as a flat
+# line at the last known value if plotted. Here each field's series contains
+# only genuine confirmed observations (a row where that field is non-null),
+# in original observed order, so the drawn line only ever connects real
+# points -- never a value the camera didn't actually confirm.
+
+_FIELD_LABELS: Dict[str, str] = {
+    # Plain ASCII, not the frontend's "SpO₂"/"EtCO₂" subscripts -- ReportLab's
+    # base14 Helvetica has no glyph for U+2082 and silently renders it as a
+    # missing-character box, same reason the periodic vitals table already
+    # spells these out as "SpO2"/"EtCO2".
+    "hr": "Heart Rate (bpm)",
+    "spo2": "SpO2 (%)",
+    "etco2": "EtCO2 (mmHg)",
+    "temp": "Temp (C)",
+    "rr": "Resp Rate (/min)",
+}
+_FIELD_COLORS: Dict[str, colors.Color] = {
+    "hr": colors.HexColor("#1E9E5A"),
+    "spo2": colors.HexColor("#0B84C6"),
+    "etco2": colors.HexColor("#C69A0B"),
+    "temp": colors.HexColor("#D9622B"),
+    "rr": colors.HexColor("#7A4FC6"),
+    "nibpSystolic": colors.HexColor("#C6302B"),
+    "nibpDiastolic": colors.HexColor("#E8776F"),
+    "nibpMean": colors.HexColor("#8A1F1B"),
+}
+
+
+def _field_series(readings: List[dict], field: str) -> List[tuple]:
+    origin = readings[0]["timestamp"] if readings else 0
+    points = []
+    for r in readings:
+        value = r.get(field)
+        if value is None:
+            continue
+        points.append(((r["timestamp"] - origin) / 60000.0, float(value)))
+    return points
+
+
+def _line_chart_drawing(title: str, series: List[tuple], series_names: List[str], series_colors: List[colors.Color], width: float, height: float) -> Optional[Drawing]:
+    """One field's real observations as a small line plot, x-axis in minutes
+    since the session start. Returns None (caller falls back to text) when
+    there are fewer than 2 points -- a single point or an empty series has
+    no meaningful line to draw, and ReportLab's axis autoscale can raise on
+    a degenerate (min==max) range."""
+    non_empty = [s for s in series if len(s) >= 2]
+    if not non_empty:
+        return None
+
+    d = Drawing(width, height)
+    lp = LinePlot()
+    lp.x = 35
+    lp.y = 15
+    lp.width = width - 50
+    lp.height = height - 35
+    lp.data = series
+    all_x = [p[0] for s in series for p in s]
+    all_y = [p[1] for s in series for p in s]
+    lp.xValueAxis.valueMin = min(all_x)
+    lp.xValueAxis.valueMax = max(all_x) if max(all_x) > min(all_x) else min(all_x) + 1
+    lp.xValueAxis.labelTextFormat = "%0.0f min"
+    y_pad = max((max(all_y) - min(all_y)) * 0.15, 1)
+    lp.yValueAxis.valueMin = min(all_y) - y_pad
+    lp.yValueAxis.valueMax = max(all_y) + y_pad
+    for i, (color, name) in enumerate(zip(series_colors, series_names)):
+        if i < len(lp.lines):
+            lp.lines[i].strokeColor = color
+            lp.lines[i].strokeWidth = 1.3
+            lp.lines[i].symbol = None
+    d.add(lp)
+    d.add(String(0, height - 10, title, fontName="Helvetica-Bold", fontSize=8, fillColor=colors.HexColor("#1E3A5F")))
+    if len(series_names) > 1:
+        legend = Legend()
+        legend.x = width - 5
+        legend.y = height - 12
+        legend.alignment = "right"
+        legend.fontName = "Helvetica"
+        legend.fontSize = 6
+        legend.dx = 6
+        legend.dy = 6
+        legend.deltay = 8
+        legend.colorNamePairs = list(zip(series_colors, series_names))
+        d.add(legend)
+    return d
+
+
+def _vital_trend_charts(readings: List[dict]) -> List:
+    """Builds the story fragments for the Vital Trend Charts page: one small
+    chart per single-value field (HR/SpO2/EtCO2/Temp/RR) plus one combined
+    NIBP chart (systolic/diastolic/mean). A field with fewer than 2 real
+    observations is reported as honest text instead of a chart -- see
+    _line_chart_drawing's docstring."""
+    story: List = []
+    chart_w, chart_h = 170 * mm, 42 * mm
+
+    single_fields = ["hr", "spo2", "etco2", "temp", "rr"]
+    for field in single_fields:
+        series = _field_series(readings, field)
+        drawing = _line_chart_drawing(_FIELD_LABELS[field], [series], [_FIELD_LABELS[field]], [_FIELD_COLORS[field]], chart_w, chart_h)
+        if drawing is not None:
+            story.append(drawing)
+        else:
+            n = len(series)
+            text = (
+                f"{_FIELD_LABELS[field]}: no persisted observations for this session."
+                if n == 0
+                else f"{_FIELD_LABELS[field]}: only {n} observation recorded ({series[0][1]:g}) -- not enough points to chart a trend."
+            )
+            story.append(Paragraph(text, _body_style))
+        story.append(Spacer(1, 3 * mm))
+
+    nibp_names = {"nibpSystolic": "Systolic", "nibpDiastolic": "Diastolic", "nibpMean": "Mean"}
+    nibp_series = [_field_series(readings, f) for f in nibp_names]
+    drawing = _line_chart_drawing(
+        "NIBP (mmHg)", nibp_series, list(nibp_names.values()),
+        [_FIELD_COLORS[f] for f in nibp_names], chart_w, chart_h,
+    )
+    if drawing is not None:
+        story.append(drawing)
+    else:
+        total = sum(len(s) for s in nibp_series)
+        story.append(Paragraph(
+            "NIBP: no persisted observations for this session." if total == 0
+            else "NIBP: not enough observations recorded to chart a trend.",
+            _body_style,
+        ))
+    return story
+
+
 def _footer(canvas, doc) -> None:
     canvas.saveState()
     canvas.setFont("Helvetica-Oblique", 7)
@@ -107,6 +245,9 @@ def generate_pdf(db: OrmSession, session_id: str) -> bytes:
     chart = build_chart(db, session_id)
     drug_events = repo.list_drug_events(db, session_id)
     corrections = _combined_corrections(db, session_id)
+    readings = repo.list_readings(db, session_id)
+    alerts = repo.list_alerts(db, session_id)
+    flagged = repo.list_flagged(db, session_id)
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -114,7 +255,8 @@ def generate_pdf(db: OrmSession, session_id: str) -> bytes:
     )
     story = []
 
-    story.append(Paragraph("Anaesthesia Record", _h1_style))
+    story.append(Paragraph("VITAL", ParagraphStyle("brand", parent=_h2_style, textColor=colors.HexColor("#1E3A5F"), spaceAfter=0)))
+    story.append(Paragraph("Operation Report", _h1_style))
     story.append(Paragraph(session.procedure, _h2_style))
     story.append(Spacer(1, 4 * mm))
 
@@ -173,6 +315,47 @@ def generate_pdf(db: OrmSession, session_id: str) -> bytes:
     )
     vitals_table.setStyle(TableStyle(_HEADER_ROW_STYLE))
     story.append(vitals_table)
+    story.append(Spacer(1, 6 * mm))
+
+    # Vital Trend Charts -- real per-observation series, own page (only
+    # emitted when there is at least one persisted reading; a session with
+    # none has nothing honest to chart, and PageBreak() before an otherwise
+    # empty page would print a blank sheet).
+    if readings:
+        story.append(PageBreak())
+        story.append(Paragraph("Vital Trend Charts", _h1_style))
+        story.append(Paragraph(
+            "Each trend line connects only genuinely confirmed camera observations for that field — "
+            "gaps in a field's coverage are simply not drawn, never filled in.",
+            _body_style,
+        ))
+        story.append(Spacer(1, 3 * mm))
+        story.extend(_vital_trend_charts(readings))
+        story.append(Spacer(1, 4 * mm))
+
+    story.append(Paragraph("Alerts & Exceptions", _h2_style))
+    critical_alerts = [a for a in alerts if a.severity == "critical"]
+    warning_alerts = [a for a in alerts if a.severity == "warning"]
+    info_alerts = [a for a in alerts if a.severity not in ("critical", "warning")]
+    blocking_flagged = [f for f in flagged if f.severity == "critical"]
+    informational_flagged = [f for f in flagged if f.severity == "warning"]
+    story.append(Paragraph(
+        f"Clinical alerts — {len(critical_alerts)} critical, {len(warning_alerts)} warning, {len(info_alerts)} informational. "
+        f"OCR review items — {len(blocking_flagged)} blocking exception"
+        f"{'s' if len(blocking_flagged) != 1 else ''} raised, {len(informational_flagged)} informational "
+        f"low-/medium-confidence event{'s' if len(informational_flagged) != 1 else ''} logged.",
+        _body_style,
+    ))
+    if alerts:
+        alert_rows = [["Time", "Severity", "Vital", "Message"]]
+        for a in sorted(alerts, key=lambda a: a.timestamp):
+            alert_rows.append([_fmt_ts(a.timestamp), a.severity, a.vital_type, _cell(a.message)])
+        alert_table = Table(alert_rows, colWidths=[32 * mm, 22 * mm, 20 * mm, 96 * mm], repeatRows=1)
+        alert_table.setStyle(TableStyle(_HEADER_ROW_STYLE))
+        story.append(Spacer(1, 2 * mm))
+        story.append(alert_table)
+    else:
+        story.append(Paragraph("No clinical alerts recorded for this operation.", _body_style))
     story.append(Spacer(1, 6 * mm))
 
     story.append(Paragraph("Drug Log", _h2_style))

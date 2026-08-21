@@ -1,8 +1,9 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { TrendingUp, TrendingDown, Minus, Activity } from 'lucide-react';
-import { cn, clamp } from '@/lib/utils';
-import type { AlarmSeverity } from '@/types/vitals';
+import { TrendingUp, TrendingDown, Minus, Activity, CheckCircle2, PauseCircle, Search } from 'lucide-react';
+import { cn, clamp, formatTime } from '@/lib/utils';
+import type { AlarmSeverity, FieldStatus } from '@/types/vitals';
+import { semanticUi } from '@/design-system/tokens';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -22,6 +23,19 @@ interface VitalCardProps {
   onAction?:       () => void;
   actionBusy?:     boolean;
   className?:      string;
+  // M5.7. 'confirmed' | 'held' | 'baseline' | undefined -- straight off
+  // backend/app/validation/reconcile.py's field_status (via the WS 'reading'
+  // envelope). undefined means no field-level status is known for this
+  // vital at all (Demo Mode, or before the first real frame): renders
+  // nothing, never a fabricated status. 'held'/'baseline' both render as
+  // the same visible "Held" state -- the operator-facing distinction that
+  // matters is "genuinely observed just now" vs "not", not WHY it wasn't.
+  fieldStatus?:    FieldStatus;
+  // Epoch ms of the last tick this field was GENUINELY confirmed (straight
+  // off the WS envelope's lastConfirmedAt) -- what a held card's caption
+  // reads. Present even while fieldStatus is 'held', since reconcile()
+  // never forgets the last real confirmation.
+  lastConfirmedAt?: number;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -36,9 +50,9 @@ function valueFontSize(val: string): number {
 }
 
 function confidenceColor(c: number) {
-  if (c >= 90) return '#16A34A';
-  if (c >= 75) return '#D97706';
-  return '#DC2626';
+  if (c >= 90) return semanticUi.ok;
+  if (c >= 75) return semanticUi.warning;
+  return semanticUi.critical;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -48,7 +62,7 @@ export const VitalCard = memo(function VitalCard({
   secondaryValue, secondaryLabel,
   alarmStatus = 'normal', trend = 'stable',
   limits, confidence, actionLabel, onAction, actionBusy,
-  className,
+  className, fieldStatus, lastConfirmedAt,
 }: VitalCardProps) {
   const prevRef   = useRef<number | string>(value);
   const [display, setDisplay] = useState(value);
@@ -65,12 +79,12 @@ export const VitalCard = memo(function VitalCard({
   const isCritical = alarmStatus === 'critical';
   const isWarning  = alarmStatus === 'warning';
 
-  const valueColor = isCritical ? '#DC2626' : isWarning ? '#D97706' : color;
+  const valueColor = isCritical ? semanticUi.critical : isWarning ? semanticUi.warning : color;
   const displayStr = String(display);
   const fontSize   = valueFontSize(displayStr);
 
   const TrendIcon  = trend === 'up' ? TrendingUp : trend === 'down' ? TrendingDown : Minus;
-  const trendColor = trend === 'stable' ? '#CBD5E1' : trend === 'up' ? '#D97706' : '#0284C7';
+  const trendColor = trend === 'stable' ? '#CBD5E1' : trend === 'up' ? semanticUi.warning : '#0284C7';
 
   const cardBg     = isCritical ? '#FEF2F2' : isWarning ? '#FFFBEB' : '#FFFFFF';
   const borderClr  = isCritical ? '#FECACA' : isWarning ? '#FDE68A' : '#E2E8F0';
@@ -170,6 +184,36 @@ export const VitalCard = memo(function VitalCard({
           </span>
         )}
       </div>
+
+      {/* M5.7: confirmed/held status -- never omitted in favour of styling a
+          held value as fresh (the core product requirement this exists
+          for). Absent entirely (not even the container div) when
+          fieldStatus is undefined, e.g. Demo Mode. */}
+      {fieldStatus && (
+        <div className="px-4 pb-1.5">
+          {fieldStatus === 'confirmed' ? (
+            <span className="flex items-center gap-1 font-display text-[9px] font-semibold" style={{ color: semanticUi.ok }}>
+              <CheckCircle2 size={9} />
+              Confirmed{lastConfirmedAt ? ` ${formatTime(lastConfirmedAt)}` : ''}
+            </span>
+          ) : fieldStatus === 'unknown' ? (
+            /* M5.8: nothing has ever been observed for this field. It must
+               NOT read "Held" -- there is no earlier reading being held, and
+               saying so is exactly the fabrication this milestone removed
+               (the card used to show a seeded HR 75 / Temp 36.8 / RR 14 as
+               "Held · last confirmed hh:mm:ss"). */
+            <span className="flex items-center gap-1 font-display text-[9px] font-semibold text-slate-400">
+              <Search size={9} />
+              Waiting for camera
+            </span>
+          ) : (
+            <span className="flex items-center gap-1 font-display text-[9px] font-semibold text-amber-600">
+              <PauseCircle size={9} />
+              Held{lastConfirmedAt ? ` · last confirmed ${formatTime(lastConfirmedAt)}` : ''}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Action button (NIBP measure) */}
       {onAction && (

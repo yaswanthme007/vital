@@ -6,9 +6,6 @@ import {
   ArrowRight, CheckCircle2, Wifi, Lock, Zap, Eye,
   ChevronRight,
 } from 'lucide-react';
-import { useSessionStore } from '@/store/sessionStore';
-import { useDemoStore } from '@/store/demoStore';
-import { useToast } from '@/store/toastStore';
 
 // ─── Animated Vital Card ─────────────────────────────────────────────────────
 
@@ -145,36 +142,10 @@ const PIPELINE_STEPS = [
 
 export function LandingPage() {
   const navigate = useNavigate();
-  const { startSession, activeSession } = useSessionStore();
-  const { activate: activateDemo } = useDemoStore();
-  const { toast } = useToast();
-  const [demoLoading, setDemoLoading] = useState(false);
   const pipelineRef = useRef(null);
   const pipelineInView = useInView(pipelineRef, { once: true, margin: '-80px' });
 
   const handleStartNew = () => navigate('/start');
-
-  const handleDemo = async () => {
-    setDemoLoading(true);
-    try {
-      if (!activeSession) {
-        await startSession({
-          patientId: 'DEMO-001',
-          procedure: 'Laparoscopic Cholecystectomy',
-          anesthetist: 'Dr. Sarah Chen',
-          asa: 2,
-        });
-      }
-      activateDemo('normal');
-      navigate('/surgery');
-    } catch (err) {
-      console.error('Failed to start demo session', err);
-      toast.error('Could not start demo', {
-        description: "Couldn't reach the backend — check it's running (docker compose up) and try again.",
-      });
-      setDemoLoading(false);
-    }
-  };
 
   return (
     <div className="h-screen w-screen overflow-y-auto overflow-x-hidden bg-clinical-bg">
@@ -298,19 +269,6 @@ export function LandingPage() {
                 >
                   Start New Case
                   <ArrowRight size={18} />
-                </motion.button>
-                <motion.button
-                  onClick={handleDemo}
-                  disabled={demoLoading}
-                  className="flex items-center gap-2.5 px-6 py-3.5 rounded-xl font-display font-semibold text-base text-slate-700 bg-white border border-slate-200 hover:border-slate-300 hover:bg-slate-50 transition-all disabled:opacity-70"
-                  style={{ boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.97 }}
-                >
-                  {demoLoading
-                    ? <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 0.8, ease: 'linear' }}><Activity size={16} /></motion.div>
-                    : <Zap size={16} className="text-amber-500" />}
-                  {demoLoading ? 'Starting…' : 'Live Demo'}
                 </motion.button>
               </motion.div>
 

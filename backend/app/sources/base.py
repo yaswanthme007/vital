@@ -15,12 +15,19 @@ class Frame:
     provenance: a Provenance literal from app.models.vitals (e.g. "ai_high").
     source_frame_id: optional identifier for the underlying frame (e.g. a
       simulator sample id) — useful for debugging/replay, not required.
+    crop_suspicious (M5.4.1): {vital: bool} — app.pipeline.read_frame's
+      `crop_integrity` output, when the source opted into computing it
+      (currently only app.sources.camera.CameraSource does). Empty dict
+      (the default) for every other source, which app.validation.reconcile
+      treats identically to "nothing flagged" — see that module's
+      per_vital_crop_suspicious param.
     """
 
     reading: dict
     per_vital_confidence: Dict[str, float] = field(default_factory=dict)
     provenance: str = "ai_high"
     source_frame_id: Optional[str] = None
+    crop_suspicious: Dict[str, bool] = field(default_factory=dict)
 
 
 class VitalsSource(ABC):

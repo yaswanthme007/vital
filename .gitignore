@@ -5,3 +5,8 @@ dist/
 !.env.example
 *.log
 .DS_Store
+# Local/test databases
+*.db
+
+# Evaluation datasets and generated artifacts
+backend/app/eval/tier2_data/

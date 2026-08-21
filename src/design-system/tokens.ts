@@ -12,6 +12,38 @@ export const vitals = {
 
 export type VitalKey = keyof typeof vitals;
 
+// `vitals` above is the dark neon palette that exact-matches roi.py's
+// VITAL_COLORS (the camera pipeline's colour-match ground truth) and
+// simulator/render/common.py's VITAL_COLORS — it documents what the CAMERA
+// FEED renders/matches, not what the dashboard chrome looks like. No shipped
+// screen currently renders in dark mode (Surgery/Start/Review/Landing all
+// ship a light theme), so this is intentionally kept separate from —
+// not merged into — the palette actually used on screen below.
+//
+// `vitalsUi` is that shipped light-theme palette: the single source of truth
+// for per-vital COSMETIC colour in the live dashboard (VitalsGrid, VitalCard,
+// and anywhere else rendering a vital tile). Previously duplicated ad hoc as
+// raw hex in VitalsGrid.tsx/VitalCard.tsx — consolidated here so the two
+// files can't drift out of sync with each other again.
+export const vitalsUi = {
+  hr:    { color: '#16A34A', label: 'Heart Rate' },
+  spo2:  { color: '#0284C7', label: 'SpO₂' },
+  nibp:  { color: '#DC2626', label: 'NIBP' },
+  etco2: { color: '#D97706', label: 'EtCO₂' },
+  temp:  { color: '#EA580C', label: 'Temp' },
+  rr:    { color: '#7C3AED', label: 'Resp. Rate' },
+} as const;
+
+// Cosmetic critical/warning/ok colour ramp used for the AI-confidence bar
+// and alarm-state styling in VitalCard — same "shipped light theme" scope
+// as vitalsUi above (distinct from the dark `semantic` block below, which
+// again is unused by any shipped screen today).
+export const semanticUi = {
+  critical: '#DC2626',
+  warning:  '#D97706',
+  ok:       '#16A34A',
+} as const;
+
 export const semantic = {
   critical: { color: '#FF3B30', bg: 'rgba(255,59,48,0.1)',   border: 'rgba(255,59,48,0.4)',  text: '#FF6B62',  icon: '⊗' },
   warning:  { color: '#FF9500', bg: 'rgba(255,149,0,0.1)',  border: 'rgba(255,149,0,0.4)',  text: '#FFB340',  icon: '△' },

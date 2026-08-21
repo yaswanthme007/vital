@@ -93,6 +93,37 @@ def add_note(session_id: str, body: NoteCreate, db: OrmSession = Depends(get_db)
     return note.model_dump(by_alias=True)
 
 
+# ─── readings (M5.7) ────────────────────────────────────────────────────────
+
+
+@router.get("/sessions/{session_id}/readings")
+def get_readings(
+    session_id: str,
+    since: Optional[int] = None,
+    limit: Optional[int] = None,
+    db: OrmSession = Depends(get_db),
+) -> List[dict]:
+    """The OBSERVED TIMELINE: every persisted app.db.models.VitalReadingRow
+    for this session, oldest first, already camelCase with `source` and
+    `fieldStatus` (see repo.list_readings). This is what the frontend
+    observation ledger hydrates from on mount/reconnect (so a page reload
+    or a re-opened Review/Archive tab shows the SAME timeline the live
+    ledger built, not a second copy of it), and what Review/Archive read
+    for the session's real vitals history.
+
+    `since` (epoch ms, optional): only rows strictly after this timestamp
+    -- a client that already has everything up to its last-seen row asks
+    for exactly what it's missing rather than re-fetching the whole
+    session on every poll. `limit` (optional): caps how many rows come
+    back, oldest-first, same semantics as repo.list_readings.
+
+    Deliberately does NOT require the session to still be active -- a
+    completed/archived session's readings must remain fetchable, which is
+    the whole point of Archive/Review consuming this same endpoint."""
+    _require_session(db, session_id)
+    return repo.list_readings(db, session_id, since_ms=since, limit=limit)
+
+
 # ─── alarm limits ─────────────────────────────────────────────────────────
 
 

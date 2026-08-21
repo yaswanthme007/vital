@@ -3,8 +3,8 @@
 **Computer vision that reads an anaesthesia monitor and turns it into a
 digitised, medico-legal record — live, offline, no manual charting.**
 
-VITAL points a camera at a patient monitor, reads the vital signs directly
-off the screen, and streams them into a clinical dashboard — building an
+VITAL points a camera at any patient monitor, is shown once where each vital
+lives, then reads those vital signs directly off the screen, and streams them into a clinical dashboard — building an
 auditable, signable, PDF-exportable anaesthesia record automatically instead
 of relying on a clinician to transcribe numbers onto paper every few
 minutes.
@@ -19,10 +19,11 @@ minutes.
 - [Tech Stack](#tech-stack)
 - [Getting Started](#getting-started)
 - [Application Flow](#application-flow)
-- [The OCR Pipeline](#the-ocr-pipeline)
+- [The Recognition Pipeline](#the-recognition-pipeline)
 - [Project Structure](#project-structure)
 - [Testing](#testing)
 - [Known Limitations & Roadmap](#known-limitations--roadmap)
+- [Documentation](#documentation)
 
 ---
 
@@ -31,7 +32,7 @@ minutes.
 During surgery, an anaesthetist's vitals record is still, in most operating
 theatres, a paper chart filled in by hand every few minutes while watching a
 patient monitor. VITAL replaces that transcription step: a camera reads the
-monitor's own colour-coded display, digitises each vital sign in real time,
+monitor's own display, digitises each vital sign in real time,
 flags anything physiologically implausible for human review, and produces a
 signed, tamper-evident PDF chart at the end of the case — all running
 entirely offline, with no patient data ever leaving the device.
@@ -40,12 +41,15 @@ entirely offline, with no patient data ever leaving the device.
 
 - **Camera-based vitals capture** — reads HR, SpO₂, NIBP, EtCO₂, temperature,
   and respiratory rate directly from a monitor's display.
-- **Live clinical dashboard** — real-time waveforms (ECG, pleth, capnography)
-  and vitals tiles, with configurable alarm thresholds and audible/visual
-  alerts on out-of-range readings.
-- **Camera calibration workflow** — a guided setup (connect camera → detect
-  monitor boundary → correct perspective → map vital regions → verify OCR
-  accuracy) run once per physical monitor.
+- **Active Operation workspace** — the camera feed, six vitals tiles with
+  confirmed/held status, and a live observation ledger update continuously for the
+  whole case, with configurable alarm thresholds and audible/visual alerts on
+  out-of-range CONFIRMED readings. **(M5.7)** — see
+  [`docs/M5_7_CONTINUOUS_CAMERA_OBSERVATION.md`](docs/M5_7_CONTINUOUS_CAMERA_OBSERVATION.md).
+- **Camera calibration workflow** — a guided ~15-second setup (connect camera →
+  mark screen corners → draw each vital's display region → verify each reads
+  correctly) run once per physical monitor. This is what makes VITAL work on any
+  manufacturer's monitor rather than one known colour palette.
 - **Review & sign-off** — every low-confidence OCR read is queued for human
   confirmation or correction, with the source frame shown alongside the
   reading, before a case can be signed.
@@ -74,8 +78,8 @@ entirely offline, with no patient data ever leaving the device.
 │  Archive                 │         │  WebSocket: streamed vitals      │
 │  OCR Pipeline Inspector  │         │  (synthetic or replayed OCR)     │
 └─────────────────────────┘         │                                │
-                                     │  Pipeline: screen detect →      │
-                                     │  colour-ROI extract → Tesseract  │
+                                     │  Pipeline: calibrated ROI +      │
+                                     │  layout tracking → Tesseract     │
                                      │  OCR → validation/reconciliation │
                                      │                                │
                                      │  SQLite (sessions, readings,     │
@@ -162,8 +166,10 @@ the same WiFi network, start Vite with `--host` (already the default in
 2. **Calibration** *(one-time per physical monitor)* — connect the camera,
    detect the monitor boundary, correct for perspective, map each vital's
    display region, and verify OCR accuracy against a live frame.
-3. **Live Monitor** — real-time vitals and waveforms stream in; alerts fire
-   automatically on out-of-range readings.
+3. **Active Operation** — the camera stays on and continuously observes the
+   monitor for the whole case; vitals update and the observation ledger fills in
+   as each field is genuinely confirmed. Alerts fire automatically on out-of-range
+   CONFIRMED readings, never on a held/stale value.
 4. **Review & Sign-off** — confirm or correct any flagged readings, then
    sign the case to lock it as an immutable, tamper-evident record.
 5. **Archive** — find any past session and export its signed PDF chart.
@@ -173,24 +179,33 @@ pipeline itself — capture → preprocess → detect → warp → extract → O
 validate → output — useful for understanding or demonstrating how a frame is
 actually processed.
 
-## The OCR Pipeline
+## The Recognition Pipeline
 
-VITAL's vision pipeline finds each vital sign by colour, not generic text
-recognition: HR, SpO₂, NIBP, and EtCO₂ are each rendered in an exact,
-known colour, and the pipeline isolates pixels matching that colour before
-running Tesseract on just that region. Preprocessing automatically detects
-whether the source is a dark monitor screen or a light dashboard and
-normalises polarity accordingly, so it isn't limited to one visual style of
-source.
+VITAL locates each vital sign from a **calibration profile** — a one-time, ~15-second
+setup per physical monitor in which the operator marks the screen's four corners and
+draws a box around each vital's display slot, then confirms that each box reads
+correctly. During a case those boxes are re-anchored every frame by tracking the
+monitor's static on-screen chrome, so the reading survives camera drift.
 
-This is a deliberate, honestly-scoped **Tier-1** approach: it is provably
-correct for any screen rendering in VITAL's known colour palette (verified
-directly against the API — a rendered test frame reads back at 90%+
-confidence across every vital), but it does not yet generalise to arbitrary
-real-world monitors from other manufacturers, which use different colour
-conventions. A **Tier-2** path — a trained model generalising across monitor
-brands and lighting conditions — is scoped as a deliberate next step, not
-pretended to already exist (`backend/app/pipeline/onnx_engine.py`).
+```
+CALIBRATE (once)   corners -> homography · boxes -> ROIs · verify -> operator sign-off
+LIVE (1 Hz)        frame -> track layout -> apply ROIs -> OCR -> confidence -> reconcile
+```
+
+This is a deliberate design choice, not a shortfall. What distinguishes one vital
+field from another on a monitor is **position and the printed label beside it** —
+information a cropped, colour-stripped image simply does not contain. An earlier
+architecture that tried to infer field identity from crop appearance alone was
+measured at 4.3% on an unseen monitor, and was *more* confident when wrong than when
+right. Being told the layout once, by a clinician, is both more accurate and more
+defensible: every region was seen, verified, and signed off before the case started.
+
+Calibration makes VITAL **monitor-agnostic after setup** rather than universally
+monitor-agnostic without it — and it requires no training data, runs on CPU, and
+stays fully offline.
+
+Full rationale and the measurements behind it: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),
+[`docs/EVIDENCE.md`](docs/EVIDENCE.md).
 
 ## Project Structure
 
@@ -201,7 +216,7 @@ vital/
 │   │   ├── landing/
 │   │   ├── start/                # New Case
 │   │   ├── calibration/
-│   │   ├── surgery/               # Live Monitor
+│   │   ├── operation/              # Active Operation (M5.7; was surgery/)
 │   │   ├── review/                # Review & Sign-off
 │   │   ├── archive/
 │   │   ├── ocr-debug/             # Pipeline inspector
@@ -260,14 +275,32 @@ curl -X POST http://localhost:8000/api/pipeline/read-frame -F "file=@testframe.p
 
 ## Known Limitations & Roadmap
 
-- **Colour-dependent OCR** — the pipeline currently requires the source
-  screen to render vitals in VITAL's known colour palette; it does not yet
-  read arbitrary real-world monitors with different colour conventions.
-  Planned: per-installation colour calibration, then a trained model
-  (`onnx_engine.py`) for cross-manufacturer generalisation.
-- **Live Monitor is currently demo-data driven** — the real-time dashboard
-  is fed by a synthetic vitals generator (or Demo Mode's scripted scenarios)
-  rather than a continuous live-camera feed; the camera→OCR round trip is
-  proven via Calibration's single-frame Verify step and the direct API test
-  above, not yet wired as a continuous streaming source.
-- **Single-language OCR** — Tesseract is configured for plain digits only.
+- **Calibration is required per monitor.** VITAL reads any monitor after a ~15-second
+  setup; it does not read an arbitrary monitor with zero setup. See
+  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for why that is the right trade.
+- **Calibration must be redone if the camera is moved substantially.** Small drift is
+  tracked automatically; a large move drops the tracking lock, at which point VITAL
+  holds the last confirmed values and asks for recalibration rather than reading a
+  wrong region.
+- **The Active Operation workspace runs on the continuous live-camera feed once a
+  case is calibrated for camera mode** — synthetic vitals and Demo Mode's scripted
+  scenarios remain available for UI development/demonstration without hardware, and
+  are isolated from camera-derived history: neither is ever written to a session's
+  real observation timeline. See
+  [`docs/M5_7_CONTINUOUS_CAMERA_OBSERVATION.md`](docs/M5_7_CONTINUOUS_CAMERA_OBSERVATION.md).
+- **Single-language OCR.** Tesseract is configured for digits only.
+- **Not clinically validated.** No claim is made about clinical deployment safety on
+  any monitor.
+
+**Active roadmap:** [`docs/ROADMAP.md`](docs/ROADMAP.md) — M5.1 (OCR confidence) ->
+M5.2 (real calibration) -> M5.3 (layout tracking) -> benchmark -> promotion.
+
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Current and target recognition architecture, confidence model, safety posture |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Milestones M5.1 to demo-ready, acceptance criteria, demo script |
+| [`docs/EVIDENCE.md`](docs/EVIDENCE.md) | Every measurement the architecture decision rests on |
+| [`docs/archive/`](docs/archive/) | Superseded M1-M5 milestone reports, retained as an audit trail. **Not current guidance.** |
+| [`backend/README.md`](backend/README.md) | Backend setup, tests, simulator, eval harness |

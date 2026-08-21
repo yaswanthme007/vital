@@ -67,5 +67,24 @@ class VitalSummary(CamelModel):
     duration_min: float
 
 
+class ObservationStats(CamelModel):
+    """M5.7. Replaces Archive's previously-hardcoded 'AI Processing' panel
+    ('Frames processed 3,847' / 'Avg confidence 94.2%') with real numbers
+    computed from this session's own persisted app.db.models.VitalReadingRow
+    rows -- see app.db.repo._observation_stats. Every row counted here is
+    already confirmed-only post-M5.7 (app.ws.vitals.send_loop only persists
+    fields reconcile() marked 'confirmed'), so `confirmed_observations` is
+    not a filtered subset of `readings_count` -- it IS readings_count,
+    reported under its own name so a reader never has to know that fact to
+    trust the number."""
+
+    readings_count: int = 0
+    confirmed_observations: int = 0
+    avg_confidence: Optional[float] = None
+    source: Optional[Literal["camera", "synthetic", "replay", "mixed"]] = None
+
+
 class ArchivedSession(Session):
     vital_summary: VitalSummary
+    # Additive (not present in frontend TS type)
+    observation_stats: ObservationStats = ObservationStats()
