@@ -1,3 +1,4 @@
+// VITAL · src/design-system/components/Progress.tsx
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
 

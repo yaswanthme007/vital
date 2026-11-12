@@ -1,3 +1,4 @@
+// VITAL · src/design-system/tokens.ts
 // ─── Design Tokens ────────────────────────────────────────────────────────────
 // Single source of truth. All Tailwind classes are derived from these values.
 

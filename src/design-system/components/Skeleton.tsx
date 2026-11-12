@@ -1,3 +1,4 @@
+// VITAL · src/design-system/components/Skeleton.tsx
 import { cn } from '@/lib/utils';
 
 // ─── Base Skeleton ─────────────────────────────────────────────────────────────

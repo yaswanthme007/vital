@@ -1,3 +1,4 @@
+// VITAL · src/components/vitals/AlertPanel.tsx
 import { motion, AnimatePresence } from 'framer-motion';
 import { AlertTriangle, AlertCircle, Info, X, BellOff } from 'lucide-react';
 import { useAlertStore } from '@/store/alertStore';

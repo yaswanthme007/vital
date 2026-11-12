@@ -1,3 +1,4 @@
+// VITAL · src/store/alertStore.ts
 import { create } from 'zustand';
 import type { VitalType } from '@/types/vitals';
 

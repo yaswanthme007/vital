@@ -1,3 +1,4 @@
+// VITAL · src/features/calibration/fieldVerifyState.test.ts
 // Regression tests for the Calibration Verify-step Confirm-gating fix
 // (M5.7.3). See fieldVerifyState.ts's module docstring for the underlying
 // design: OCR confidence/stability (what burst_verify.py measured) must

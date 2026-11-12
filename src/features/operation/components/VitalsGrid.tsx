@@ -1,3 +1,4 @@
+// VITAL · src/features/operation/components/VitalsGrid.tsx
 import { useVitalsStore } from '@/store/vitalsStore';
 import { VitalCard } from '@/components/vitals/VitalCard';
 import { getAlarmSeverity } from '@/types/vitals';

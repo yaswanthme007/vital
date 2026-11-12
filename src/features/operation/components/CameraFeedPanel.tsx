@@ -1,3 +1,4 @@
+// VITAL · src/features/operation/components/CameraFeedPanel.tsx
 import { useEffect, useRef, useState } from 'react';
 import { Camera, Crosshair, AlertTriangle, Video } from 'lucide-react';
 import { useCameraStreamStore } from '@/store/cameraStreamStore';

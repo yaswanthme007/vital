@@ -1,3 +1,4 @@
+// VITAL · src/features/review/ReviewPage.tsx
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';

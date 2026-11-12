@@ -1,3 +1,4 @@
+// VITAL · src/design-system/components/Spinner.tsx
 import { cn } from '@/lib/utils';
 
 type Size    = 'xs' | 'sm' | 'md' | 'lg' | 'xl';

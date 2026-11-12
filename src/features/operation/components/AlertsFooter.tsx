@@ -1,3 +1,4 @@
+// VITAL · src/features/operation/components/AlertsFooter.tsx
 import { motion, AnimatePresence } from 'framer-motion';
 import { AlertTriangle, AlertCircle, Info, X, BellOff, CheckCheck } from 'lucide-react';
 import { useAlertStore } from '@/store/alertStore';

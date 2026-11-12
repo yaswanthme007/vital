@@ -1,3 +1,4 @@
+// VITAL · src/design-system/components/EmptyState.tsx
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { slideUpVariants } from '../motion';

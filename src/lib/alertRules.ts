@@ -1,3 +1,4 @@
+// VITAL · src/lib/alertRules.ts
 import type { VitalReading } from '@/types/vitals';
 import type { Alert } from '@/store/alertStore';
 
@@ -7,8 +8,9 @@ export const ALERT_THROTTLE_WINDOW_MS = 30_000;
 
 // Mirrors backend/app/alerts/rules.py's check_alerts() exactly — same
 // thresholds, same messages, same severities, same else-if exclusivity per
-// vital (e.g. HR fires at most one of its 4 branches). rr and nibp are
-// intentionally NOT checked here, matching the backend. Runs on every
+// vital (e.g. HR fires at most one of its 4 branches). NIBP (MAP/systolic)
+// and RR alerts were added on both sides together — before, hypotension
+// coloured the NIBP tile but never raised an alert. Runs on every
 // updateVitals() call regardless of source (live camera feed or Demo Mode),
 // so both paths raise the same alerts the same way.
 //
@@ -58,5 +60,56 @@ export function checkAlerts(reading: Partial<VitalReading>): NewAlert[] {
     alerts.push({ vitalType: 'temp', severity: 'warning', message: 'Hypothermia Risk', value: temp, unit: '°C' });
   }
 
+  const nibp = nibpAlert(reading);
+  if (nibp) alerts.push(nibp);
+
+  const rr = reading.rr ?? NaN;
+  if (rr >= RR_CRITICAL_HIGH) {
+    alerts.push({ vitalType: 'rr', severity: 'critical', message: 'Resp Rate HIGH', value: rr, unit: '/min' });
+  } else if (rr >= RR_WARNING_HIGH) {
+    alerts.push({ vitalType: 'rr', severity: 'warning', message: 'Resp Rate Elevated', value: rr, unit: '/min' });
+  } else if (rr <= RR_CRITICAL_LOW) {
+    alerts.push({ vitalType: 'rr', severity: 'critical', message: 'Resp Rate CRITICALLY LOW', value: rr, unit: '/min' });
+  } else if (rr <= RR_WARNING_LOW) {
+    alerts.push({ vitalType: 'rr', severity: 'warning', message: 'Resp Rate Low', value: rr, unit: '/min' });
+  }
+
   return alerts;
+}
+
+// NIBP + RR thresholds — mirror backend/app/alerts/rules.py's constants and
+// src/types/vitals.ts DEFAULT_ALARM_LIMITS (which colours the tiles), plus
+// the usual MAP floor of 65 mmHg (warning) / 55 mmHg (critical).
+export const MAP_CRITICAL_LOW = 55;
+export const MAP_WARNING_LOW = 65;
+export const SBP_CRITICAL_LOW = 70;
+export const SBP_WARNING_LOW = 90;
+export const SBP_WARNING_HIGH = 160;
+export const SBP_CRITICAL_HIGH = 180;
+
+export const RR_CRITICAL_HIGH = 30;
+export const RR_WARNING_HIGH = 24;
+export const RR_WARNING_LOW = 8;
+export const RR_CRITICAL_LOW = 5;
+
+/**
+ * At most ONE NIBP alert per check. Low pressure outranks high, and MAP
+ * outranks systolic when both are present (MAP is what perfuses organs).
+ * Either sub-field may be absent/null (not confirmed this tick) — it becomes
+ * NaN, every comparison is false, and it is skipped. Exact port of
+ * backend/app/alerts/rules.py's _nibp_alert().
+ */
+function nibpAlert(reading: Partial<VitalReading>): NewAlert | null {
+  const mean = reading.nibpMean ?? NaN;
+  const sbp = reading.nibpSystolic ?? NaN;
+  const alert = (severity: NewAlert['severity'], message: string, value: number): NewAlert =>
+    ({ vitalType: 'nibp', severity, message, value, unit: 'mmHg' });
+
+  if (mean <= MAP_CRITICAL_LOW) return alert('critical', 'MAP CRITICALLY LOW', mean);
+  if (sbp <= SBP_CRITICAL_LOW) return alert('critical', 'Systolic BP CRITICALLY LOW', sbp);
+  if (mean <= MAP_WARNING_LOW) return alert('warning', 'Hypotension (MAP)', mean);
+  if (sbp <= SBP_WARNING_LOW) return alert('warning', 'Hypotension (Systolic)', sbp);
+  if (sbp >= SBP_CRITICAL_HIGH) return alert('critical', 'Systolic BP CRITICALLY HIGH', sbp);
+  if (sbp >= SBP_WARNING_HIGH) return alert('warning', 'Hypertension', sbp);
+  return null;
 }

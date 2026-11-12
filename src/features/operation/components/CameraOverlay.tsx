@@ -1,3 +1,4 @@
+// VITAL · src/features/operation/components/CameraOverlay.tsx
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Camera, Wifi, WifiOff, Loader2, Crosshair, AlertTriangle } from 'lucide-react';

@@ -1,3 +1,4 @@
+// VITAL · src/design-system/components/Badge.tsx
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import type { Severity, VitalKey } from '../tokens';

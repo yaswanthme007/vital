@@ -1,3 +1,4 @@
+// VITAL · src/lib/vitalSummary.ts
 import type { VitalField, VitalObservationRow } from '@/types/vitals';
 import { VITAL_FIELDS } from '@/lib/ledger';
 

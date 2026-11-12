@@ -1,3 +1,4 @@
+// VITAL · src/store/cameraStreamStore.ts
 import { create } from 'zustand';
 
 // Live status of the SurgeryPage capture loop (useCameraStreaming), read by

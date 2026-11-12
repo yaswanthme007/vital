@@ -1,3 +1,4 @@
+// VITAL · src/design-system/components/Tabs.tsx
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';

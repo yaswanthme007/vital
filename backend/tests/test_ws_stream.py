@@ -128,8 +128,10 @@ def test_check_alerts_matches_frontend_thresholds():
     temp_hypo = check_alerts(dict(normal, temp=35.5))
     assert temp_hypo[0]["message"] == "Hypothermia Risk"
 
-    # rr/nibp are never checked, even far out of range — matches the hook exactly.
-    assert check_alerts(dict(normal, rr=1, nibpSystolic=300)) == []
+    # rr/nibp are now checked too (lock-step with src/lib/alertRules.ts) —
+    # full coverage lives in tests/test_alert_rules_nibp_rr.py.
+    rr_nibp = check_alerts(dict(normal, rr=1, nibpSystolic=300))
+    assert {(a["vitalType"], a["severity"]) for a in rr_nibp} == {("rr", "critical"), ("nibp", "critical")}
 
 
 def test_check_alerts_skips_missing_values_without_crashing():

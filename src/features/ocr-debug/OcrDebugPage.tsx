@@ -1,3 +1,4 @@
+// VITAL · src/features/ocr-debug/OcrDebugPage.tsx
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {

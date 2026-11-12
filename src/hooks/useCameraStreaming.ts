@@ -1,3 +1,4 @@
+// VITAL · src/hooks/useCameraStreaming.ts
 import { useEffect, useRef } from 'react';
 import { useCameraCapture } from '@/hooks/useCameraCapture';
 import { useCameraStreamStore } from '@/store/cameraStreamStore';

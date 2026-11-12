@@ -1,3 +1,4 @@
+// VITAL · src/components/layout/TopNav.tsx
 import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';

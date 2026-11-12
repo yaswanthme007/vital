@@ -1,3 +1,4 @@
+// VITAL · src/design-system/components/Card.tsx
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import type { VitalKey } from '../tokens';

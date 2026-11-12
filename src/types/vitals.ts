@@ -1,3 +1,4 @@
+// VITAL · src/types/vitals.ts
 export type VitalType = 'hr' | 'spo2' | 'nibp' | 'etco2' | 'temp' | 'rr';
 
 // M5.8: every numeric field is nullable. A camera session starts with NO

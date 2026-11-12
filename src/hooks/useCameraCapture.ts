@@ -1,3 +1,4 @@
+// VITAL · src/hooks/useCameraCapture.ts
 import { useRef, useState, useCallback, useEffect } from 'react';
 
 export type CameraSourceMode = 'camera' | 'screen';

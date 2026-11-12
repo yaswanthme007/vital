@@ -1,3 +1,4 @@
+// VITAL · src/types/session.ts
 export type AsaClass = 1 | 2 | 3 | 4 | 5 | 6;
 
 export interface Patient {

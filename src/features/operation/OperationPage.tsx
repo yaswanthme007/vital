@@ -1,3 +1,4 @@
+// VITAL · src/features/operation/OperationPage.tsx
 import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';

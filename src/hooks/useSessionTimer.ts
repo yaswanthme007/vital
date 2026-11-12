@@ -1,3 +1,4 @@
+// VITAL · src/hooks/useSessionTimer.ts
 import { useState, useEffect } from 'react';
 import { formatDuration } from '@/lib/utils';
 

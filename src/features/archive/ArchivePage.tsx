@@ -1,13 +1,16 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+// VITAL · src/features/archive/ArchivePage.tsx
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
 import {
   Search, Clock, User, Activity, Archive, Stethoscope,
   Download, Eye, FileText, Filter, X, LayoutList,
-  Table2, CheckCircle, Lock, Printer, ArrowRight, Hourglass,
+  Table2, CheckCircle, Lock, Printer, ArrowRight, Hourglass, FileSpreadsheet,
 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { observationsToCsv, csvFilename, downloadCsv } from '@/lib/csvExport';
+import { useToast } from '@/store/toastStore';
 import { formatDate, formatDuration, cn } from '@/lib/utils';
 import { Button } from '@/design-system/components/Button';
 import { Badge } from '@/design-system/components/Badge';
@@ -20,7 +23,7 @@ const ASA_COLORS: Record<number, string> = {
   1: '#00FF88', 2: '#00D4FF', 3: '#FFD600', 4: '#FF9500', 5: '#FF3B30', 6: '#FF3B30',
 };
 
-const DOCTORS = ['All Doctors', 'Dr. Priya Sharma', 'Dr. Arjun Mehta'];
+const ALL_DOCTORS = 'All Doctors';
 const ASA_OPTIONS = ['All ASA', 'ASA I', 'ASA II', 'ASA III', 'ASA IV', 'ASA V', 'ASA VI'];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -33,6 +36,49 @@ function asaLabel(cls?: number) {
 
 function durationOf(s: ArchivedSession) {
   return formatDuration((s.endTime ?? s.startTime) - s.startTime);
+}
+
+/** Filter chips come from the anaesthetists actually present in the archive,
+ * not a hardcoded list — so every real user can filter to their own cases. */
+function doctorOptions(sessions: ArchivedSession[]): string[] {
+  const names = new Set(sessions.map((s) => s.anesthetist.trim()).filter(Boolean));
+  return [ALL_DOCTORS, ...[...names].sort((a, b) => a.localeCompare(b))];
+}
+
+// ─── CSV export ───────────────────────────────────────────────────────────────
+
+function ExportCsvButton({ session }: { session: ArchivedSession }) {
+  const { toast } = useToast();
+  const [busy, setBusy] = useState(false);
+
+  const handleExport = async () => {
+    setBusy(true);
+    try {
+      const rows = await api.getReadings(session.id);
+      if (rows.length === 0) {
+        toast.info('No readings to export', {
+          description: 'VITAL recorded no confirmed observations for this session.',
+        });
+        return;
+      }
+      downloadCsv(csvFilename(session.patient.id, session.startTime), observationsToCsv(rows));
+      toast.success('CSV exported', { description: `${rows.length} reading${rows.length === 1 ? '' : 's'} saved.` });
+    } catch (err) {
+      console.error('Failed to export readings CSV', err);
+      toast.error('Could not export CSV', {
+        description: "Couldn't reach the backend — check it's running and try again.",
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Button variant="outline" size="sm" icon={<FileSpreadsheet size={14} />} onClick={handleExport}
+      loading={busy} className="flex-1 justify-center">
+      Export CSV
+    </Button>
+  );
 }
 
 // ─── PDF Preview Component ────────────────────────────────────────────────────
@@ -410,6 +456,7 @@ function DetailPanel({ session, onPdf, onDownload }: { session: ArchivedSession;
               Continue to Review &amp; Sign-off
             </Button>
           )}
+          <ExportCsvButton session={session} />
         </div>
       </div>
 
@@ -499,7 +546,8 @@ export function ArchivePage() {
   const [search, setSearch]       = useState('');
   const [selected, setSelected]   = useState<string | null>(null);
   const [viewMode, setViewMode]   = useState<'list' | 'table'>('list');
-  const [doctorFilter, setDoctorFilter] = useState('All Doctors');
+  const [doctorFilter, setDoctorFilter] = useState(ALL_DOCTORS);
+  const doctors = useMemo(() => doctorOptions(archivedSessions), [archivedSessions]);
   const [asaFilter, setAsaFilter]       = useState('All ASA');
   const [showFilters, setShowFilters]   = useState(false);
   const [pdfSession, setPdfSession]     = useState<ArchivedSession | null>(null);
@@ -533,7 +581,7 @@ export function ArchivePage() {
       s.patient.id.toLowerCase().includes(search.toLowerCase()) ||
       s.procedure.toLowerCase().includes(search.toLowerCase()) ||
       s.anesthetist.toLowerCase().includes(search.toLowerCase());
-    const doctorHit = doctorFilter === 'All Doctors' || s.anesthetist === doctorFilter;
+    const doctorHit = doctorFilter === ALL_DOCTORS || s.anesthetist === doctorFilter;
     const asaHit    = asaFilter === 'All ASA' || `ASA ${asaLabel(s.patient.asa)}` === asaFilter;
     return searchHit && doctorHit && asaHit;
   });
@@ -541,7 +589,7 @@ export function ArchivePage() {
   const selectedSession = archivedSessions.find((s) => s.id === selected) ?? null;
 
   const activeFilterCount =
-    (doctorFilter !== 'All Doctors' ? 1 : 0) +
+    (doctorFilter !== ALL_DOCTORS ? 1 : 0) +
     (asaFilter !== 'All ASA' ? 1 : 0);
 
   const openPdf = useCallback((s: ArchivedSession) => setPdfSession(s), []);
@@ -634,7 +682,7 @@ export function ArchivePage() {
 
               {/* Doctor filter */}
               <div className="flex items-center gap-1 flex-wrap">
-                {DOCTORS.map((d) => (
+                {doctors.map((d) => (
                   <button
                     key={d}
                     onClick={() => setDoctorFilter(d)}
@@ -672,7 +720,7 @@ export function ArchivePage() {
 
               {activeFilterCount > 0 && (
                 <button
-                  onClick={() => { setDoctorFilter('All Doctors'); setAsaFilter('All ASA'); }}
+                  onClick={() => { setDoctorFilter(ALL_DOCTORS); setAsaFilter('All ASA'); }}
                   className="ml-auto flex items-center gap-1 px-3 py-1 rounded-lg text-xs font-display text-slate-400 hover:text-red-500 transition-colors"
                 >
                   <X size={11} /> Clear all
@@ -697,7 +745,7 @@ export function ArchivePage() {
                   <p className="font-display text-sm text-slate-400">No sessions found</p>
                   {(search || activeFilterCount > 0) && (
                     <button
-                      onClick={() => { setSearch(''); setDoctorFilter('All Doctors'); setAsaFilter('All ASA'); }}
+                      onClick={() => { setSearch(''); setDoctorFilter(ALL_DOCTORS); setAsaFilter('All ASA'); }}
                       className="mt-2 font-display text-xs text-blue-500 hover:underline"
                     >
                       Clear filters

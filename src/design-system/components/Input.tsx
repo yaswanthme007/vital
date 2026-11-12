@@ -1,3 +1,4 @@
+// VITAL · src/design-system/components/Input.tsx
 import { forwardRef, useState, useId } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Eye, EyeOff, Search, X } from 'lucide-react';
