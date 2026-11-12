@@ -1,3 +1,4 @@
+// VITAL · src/lib/csvExport.ts
 import type { VitalField, VitalObservationRow } from '@/types/vitals';
 import { VITAL_FIELDS } from '@/lib/ledger';
 

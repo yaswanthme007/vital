@@ -1,3 +1,4 @@
+// VITAL · src/features/calibration/fieldVerifyState.ts
 // M5.7.3: Calibration's Verify step distinguishes two different things that
 // are easy to conflate:
 //

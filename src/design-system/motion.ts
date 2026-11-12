@@ -1,3 +1,4 @@
+// VITAL · src/design-system/motion.ts
 import type { Variants, Transition } from 'framer-motion';
 
 // ─── Shared transitions ────────────────────────────────────────────────────────

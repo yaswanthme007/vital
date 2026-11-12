@@ -1,3 +1,4 @@
+// VITAL · src/lib/ledger.ts
 import type { VitalField, VitalObservationRow, VitalType } from '@/types/vitals';
 
 // The 8 numeric fields, in the fixed display order the ledger renders them

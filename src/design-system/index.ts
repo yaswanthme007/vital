@@ -1,3 +1,4 @@
+// VITAL · src/design-system/index.ts
 // ─── Tokens ────────────────────────────────────────────────────────────────────
 export * from './tokens';
 

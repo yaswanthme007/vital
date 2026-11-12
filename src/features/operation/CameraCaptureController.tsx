@@ -1,3 +1,4 @@
+// VITAL · src/features/operation/CameraCaptureController.tsx
 import { useSessionStore } from '@/store/sessionStore';
 import { useCameraStreaming } from '@/hooks/useCameraStreaming';
 

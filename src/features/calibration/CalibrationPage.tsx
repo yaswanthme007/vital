@@ -1,3 +1,4 @@
+// VITAL · src/features/calibration/CalibrationPage.tsx
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';

@@ -1,3 +1,4 @@
+// VITAL · src/features/operation/components/LedgerPanel.tsx
 import { useMemo } from 'react';
 import { CheckCircle2, ListTree } from 'lucide-react';
 import { useVitalsStore } from '@/store/vitalsStore';

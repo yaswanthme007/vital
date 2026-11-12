@@ -1,3 +1,4 @@
+// VITAL · src/store/vitalsStore.ts
 import { create } from 'zustand';
 import type { VitalReading, AlarmLimit, VitalType, FieldStatus, VitalField, VitalObservationRow } from '@/types/vitals';
 import type { TrackingState } from '@/types/calibration';

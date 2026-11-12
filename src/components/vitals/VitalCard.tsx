@@ -1,3 +1,4 @@
+// VITAL · src/components/vitals/VitalCard.tsx
 import { memo, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { TrendingUp, TrendingDown, Minus, Activity, CheckCircle2, PauseCircle, Search } from 'lucide-react';

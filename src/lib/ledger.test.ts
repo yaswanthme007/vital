@@ -1,3 +1,4 @@
+// VITAL · src/lib/ledger.test.ts
 import { describe, expect, it } from 'vitest';
 import { deriveLedger } from '@/lib/ledger';
 import { getAlarmSeverity, DEFAULT_ALARM_LIMITS } from '@/types/vitals';

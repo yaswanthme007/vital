@@ -1,3 +1,4 @@
+// VITAL · src/hooks/useVitalsSimulation.ts
 import { useEffect } from 'react';
 import { useVitalsStore } from '@/store/vitalsStore';
 import { useSessionStore } from '@/store/sessionStore';

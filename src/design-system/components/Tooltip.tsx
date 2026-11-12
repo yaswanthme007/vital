@@ -1,3 +1,4 @@
+// VITAL · src/design-system/components/Tooltip.tsx
 import { useState, useRef, useId } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';

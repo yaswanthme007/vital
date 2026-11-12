@@ -1,3 +1,4 @@
+// VITAL · src/lib/videoGeometry.ts
 import { useEffect, useState } from 'react';
 import type { NormalizedBox } from '@/types/calibration';
 

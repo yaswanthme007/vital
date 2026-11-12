@@ -1,3 +1,4 @@
+// VITAL · src/store/toastStore.ts
 import { create } from 'zustand';
 
 export type ToastType = 'success' | 'error' | 'warning' | 'info' | 'clinical';

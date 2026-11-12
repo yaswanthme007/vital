@@ -1,3 +1,4 @@
+// VITAL · src/lib/api.ts
 import type { ArchivedSession, Session, SessionNote, SessionFormData } from '@/types/session';
 import type { CalibrationProfile, CalibrationVerifyResult, NormalizedBox, VitalKey } from '@/types/calibration';
 import type { VitalObservationRow } from '@/types/vitals';

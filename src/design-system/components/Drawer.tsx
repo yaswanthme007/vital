@@ -1,3 +1,4 @@
+// VITAL · src/design-system/components/Drawer.tsx
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';

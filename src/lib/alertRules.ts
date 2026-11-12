@@ -1,3 +1,4 @@
+// VITAL · src/lib/alertRules.ts
 import type { VitalReading } from '@/types/vitals';
 import type { Alert } from '@/store/alertStore';
 

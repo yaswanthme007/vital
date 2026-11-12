@@ -1,3 +1,4 @@
+// VITAL · src/types/calibration.ts
 // Mirrors backend/app/models/calibration.py exactly (CamelModel serializes
 // camelCase) -- the frontend's own copy of that wire shape, same pattern
 // session.ts already follows for Session/SessionFormData.

@@ -1,3 +1,4 @@
+// VITAL · src/lib/alertRules.test.ts
 import { describe, it, expect } from 'vitest';
 import { checkAlerts } from '@/lib/alertRules';
 

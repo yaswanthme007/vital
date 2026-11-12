@@ -1,3 +1,4 @@
+// VITAL · src/design-system/components/ConfidenceBadge.tsx
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 
