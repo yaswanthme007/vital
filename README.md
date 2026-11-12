@@ -46,6 +46,10 @@ entirely offline, with no patient data ever leaving the device.
   whole case, with configurable alarm thresholds and audible/visual alerts on
   out-of-range CONFIRMED readings. **(M5.7)** — see
   [`docs/M5_7_CONTINUOUS_CAMERA_OBSERVATION.md`](docs/M5_7_CONTINUOUS_CAMERA_OBSERVATION.md).
+  Alerts cover HR, SpO₂, EtCO₂, temperature, **NIBP** (hypotension on MAP ≤ 65 /
+  systolic ≤ 90, hypertension on systolic ≥ 160) and **respiratory rate** — the
+  frontend (`src/lib/alertRules.ts`) and backend (`app/alerts/rules.py`) rule
+  sets are kept identical.
 - **Camera calibration workflow** — a guided ~15-second setup (connect camera →
   mark screen corners → draw each vital's display region → verify each reads
   correctly) run once per physical monitor. This is what makes VITAL work on any
@@ -58,8 +62,9 @@ entirely offline, with no patient data ever leaving the device.
 - **Automatic PDF generation** — a complete medico-legal chart (vitals table,
   drug log, event timeline, correction history, signature) generated on
   sign-off.
-- **Session archive** — searchable history of every past case, with PDF
-  export.
+- **Session archive** — searchable history of every past case, filterable by
+  the anaesthetists actually on record, with PDF export and a raw **CSV export**
+  of every confirmed reading (unconfirmed fields stay blank, never back-filled).
 - **Fully offline** — no external services, no network calls at runtime;
   SQLite on local disk, Tesseract as a local OCR binary.
 - **Demo Mode** — six pre-built clinical scenarios (normal case, hypotension,
